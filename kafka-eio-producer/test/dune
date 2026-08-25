@@ -1,0 +1,13 @@
+(executable
+ (name test_producer_integration)
+ (modules test_producer_integration)
+ (libraries kafka_eio_producer kafka_eio_consumer kafka_eio_core kafka_test_helpers alcotest eio_main unix))
+
+(rule
+ (alias runtest-integration)
+ (action (run ./test_producer_integration.exe)))
+
+(test
+ (name test_producer_unit)
+ (modules test_producer_unit)
+ (libraries kafka_eio_producer kafka_eio_core alcotest eio_main unix))

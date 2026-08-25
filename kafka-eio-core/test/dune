@@ -1,0 +1,23 @@
+(library
+ (name kafka_test_brokers)
+ (modules kafka_test_brokers))
+
+(library
+ (name kafka_test_helpers)
+ (modules kafka_test_helpers)
+ (libraries kafka_test_brokers kafka_eio_core kafka_eio_producer kafka_eio_consumer))
+
+(test
+ (name test_kafka_error)
+ (modules test_kafka_error)
+ (libraries kafka_eio_core alcotest))
+
+(test
+ (name test_kafka_security)
+ (modules test_kafka_security)
+ (libraries kafka_eio_core alcotest unix))
+
+(test
+ (name ffi_smoke)
+ (modules ffi_smoke)
+ (libraries kafka_eio_core kafka_test_brokers))

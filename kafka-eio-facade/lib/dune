@@ -1,0 +1,6 @@
+(library
+ (name kafka_eio_kafka)
+ (public_name kafka-eio.kafka)
+ (wrapped false)
+ (modules kafka)
+ (libraries kafka_eio_producer kafka_eio_consumer))

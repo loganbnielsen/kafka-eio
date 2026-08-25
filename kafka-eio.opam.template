@@ -1,0 +1,5 @@
+depexts: [
+  ["librdkafka-dev"] {os-distribution = "debian" | os-distribution = "ubuntu"}
+  ["librdkafka"] {os-distribution = "alpine"}
+  ["librdkafka"] {os = "macos" & os-distribution = "homebrew"}
+]

@@ -1,0 +1,9 @@
+(library
+ (name kafka_eio_core)
+ (public_name kafka-eio.core)
+ (wrapped false)
+ (modules kafka_raw kafka_error kafka_consumer_handle kafka_security)
+ (foreign_stubs
+  (language c)
+  (names kafka_stubs))
+ (c_library_flags (-lrdkafka)))

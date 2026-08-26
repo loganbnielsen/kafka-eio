@@ -59,6 +59,8 @@ let test_close_resolves_pending_produce_await () =
    either pipe. Reproduced empirically: 5 create/close cycles on one
    still-open switch grew /proc/self/fd by +4 fds every cycle. *)
 let test_close_does_not_leak_pipe_fds () =
+  if not (Sys.file_exists "/proc/self/fd") then
+    Alcotest.skip ();
   Eio_main.run @@ fun _env ->
     Eio.Switch.run @@ fun sw ->
       let fd_count () = Array.length (Sys.readdir "/proc/self/fd") in

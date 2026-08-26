@@ -18,7 +18,6 @@ partition-aware concurrency, and typed transport security (plaintext/SSL/SASL)."
  (source (github loganbnielsen/kafka-eio))
  (depends
   (ocaml (>= 5.4.0))
-  (dune (>= 3.0))
   (eio (>= 1.3))
   (eio_main (>= 1.3))
   (cstruct (>= 6.0.0))

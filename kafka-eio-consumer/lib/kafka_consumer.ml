@@ -124,9 +124,9 @@ let poll_fiber t sw ~on_ready ~on_poll_error =
           Eio.Fiber.yield (); loop ()
       end
     in
-    let result = try loop () with Eio.Cancel.Cancelled _ -> `Stop_daemon in
-    Eio.Promise.resolve t.poll_exit_r ();
-    result)
+    Fun.protect
+      ~finally:(fun () -> Eio.Promise.resolve t.poll_exit_r ())
+      (fun () -> try loop () with Eio.Cancel.Cancelled _ -> `Stop_daemon))
 
 let close t =
   if Atomic.compare_and_set t.closed false true then

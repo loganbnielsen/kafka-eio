@@ -127,12 +127,14 @@ let delivery_fiber t sw =
           let err_code = Int32.to_int (Cstruct.LE.get_uint32 buf 8) in
           let result   = if err_code = 0 then Ok () else err err_code in
           Mutex.lock t.mutex;
-          (match Hashtbl.find_opt t.pending corr_id with
-           | None -> ()
-           | Some resolver ->
-             Hashtbl.remove t.pending corr_id;
-             Eio.Promise.resolve resolver result);
-          Mutex.unlock t.mutex;
+          Fun.protect
+            ~finally:(fun () -> Mutex.unlock t.mutex)
+            (fun () ->
+              match Hashtbl.find_opt t.pending corr_id with
+              | None -> ()
+              | Some resolver ->
+                Hashtbl.remove t.pending corr_id;
+                Eio.Promise.resolve resolver result);
           loop ()
     in
     (try loop () with Eio.Cancel.Cancelled _ -> ());
@@ -210,10 +212,15 @@ let close t =
          receipt — the pipe can drop one under backpressure (see
          ocaml_kafka_pipe_create), or flush itself can time out — so a
          fiber awaiting one would otherwise hang forever after close. *)
-      Mutex.lock t.mutex;
-      let leftover = Hashtbl.fold (fun _ r acc -> r :: acc) t.pending [] in
-      Hashtbl.reset t.pending;
-      Mutex.unlock t.mutex;
+      let leftover =
+        Mutex.lock t.mutex;
+        Fun.protect
+          ~finally:(fun () -> Mutex.unlock t.mutex)
+          (fun () ->
+            let leftover = Hashtbl.fold (fun _ r acc -> r :: acc) t.pending [] in
+            Hashtbl.reset t.pending;
+            leftover)
+      in
       List.iter (fun r -> Eio.Promise.resolve r (Error Kafka_error.Destroy)) leftover;
       (* librdkafka's documented lifecycle contract requires every cached
          topic object to be destroyed before the handle that created it —
@@ -321,11 +328,16 @@ let produce_await t ~topic ~value ?key ?(headers = []) () =
     Eio.Promise.resolve resolver (Error Kafka_error.Destroy);
     promise
   end else begin
-    Mutex.lock t.mutex;
-    let corr_id = !(t.next_id) in
-    t.next_id := Int64.add corr_id 1L;
-    Hashtbl.add t.pending corr_id resolver;
-    Mutex.unlock t.mutex;
+    let corr_id =
+      Mutex.lock t.mutex;
+      Fun.protect
+        ~finally:(fun () -> Mutex.unlock t.mutex)
+        (fun () ->
+          let corr_id = !(t.next_id) in
+          t.next_id := Int64.add corr_id 1L;
+          Hashtbl.add t.pending corr_id resolver;
+          corr_id)
+    in
     let rc : (unit, Kafka_error.t) result = match headers with
       | [] ->
         (match get_or_create_topic t topic with
@@ -342,8 +354,9 @@ let produce_await t ~topic ~value ?key ?(headers = []) () =
     (match rc with
      | Error e ->
        Mutex.lock t.mutex;
-       Hashtbl.remove t.pending corr_id;
-       Mutex.unlock t.mutex;
+       Fun.protect
+         ~finally:(fun () -> Mutex.unlock t.mutex)
+         (fun () -> Hashtbl.remove t.pending corr_id);
        Eio.Promise.resolve resolver (Error e)
      | Ok () -> ());
     promise

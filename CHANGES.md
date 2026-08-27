@@ -1,5 +1,11 @@
 # Changes
 
+## 0.1.1
+
+- Add `/usr/local` and Homebrew C include/library paths for librdkafka on FreeBSD and
+  macOS.
+- Skip the `/proc/self/fd` fd-leak regression test on platforms without procfs.
+
 ## 0.1.0
 
 - Initial standalone OPAM package: `Kafka_producer` and `Kafka_consumer` on top of

@@ -83,6 +83,37 @@ type poll_result =
 
 val consumer_poll     : kafka_handle -> int -> poll_result
 
+(** [consumer_queue_events_enable handle write_fd] registers [write_fd] with
+    the consumer queue ([rd_kafka_queue_get_consumer] — distinct from the main
+    queue [enable_queue_events] watches, which never carries consumer
+    messages). One byte is written to [write_fd] whenever the consumer queue
+    transitions from empty to non-empty. Call [consumer_queue_poll handle 0]
+    after waking on the matching read end to drain all pending messages.
+
+    Paired with [consumer_queue_poll], this lets a consumer be driven without
+    ever calling the blocking [consumer_poll] from an Eio fiber: releasing the
+    OCaml domain lock during [consumer_poll]'s blocking call only unblocks
+    other domains and the GC, not Eio's own single-threaded scheduler, which
+    needs this same OS thread back to service any other fiber — including,
+    concretely, a concurrent [Cohttp_eio.Server]'s connection-accept loop. *)
+val consumer_queue_events_enable : kafka_handle -> int -> unit
+
+(** [consumer_queue_events_disable handle] clears the io-event callback
+    registered by [consumer_queue_events_enable]. Call during consumer
+    shutdown before closing the pipe so librdkafka cannot write to a recycled
+    file descriptor. *)
+val consumer_queue_events_disable : kafka_handle -> unit
+
+(** [consumer_queue_poll handle timeout_ms] reads at most one message
+    directly off the consumer queue via [rd_kafka_consume_queue], with the
+    same [poll_result] shape and error semantics as [consumer_poll] (the two
+    are documented as equivalent — [consumer_poll] is a convenience wrapper
+    over the same queue). Intended to be called with [timeout_ms = 0]
+    immediately after waking on [consumer_queue_events_enable]'s pipe, so this
+    call returns essentially instantly rather than blocking the calling
+    thread. *)
+val consumer_queue_poll : kafka_handle -> int -> poll_result
+
 (** [produce_v handle topic_name partition value_opt key_opt correlation_id headers]
     Enqueues a message using rd_kafka_producev, supporting Kafka message headers.
     [headers] is transferred to librdkafka on success. [correlation_id = 0L] means

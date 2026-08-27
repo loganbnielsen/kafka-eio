@@ -27,11 +27,26 @@ type message = {
   headers   : (string * string option) list;  (** [None] value is distinct from [Some ""] *)
 }
 
+(* Unix.file_descr is an int under the hood on all Unix platforms — same
+   representation kafka_producer.ml relies on for its own wake pipe. *)
+external int_of_fd : Unix.file_descr -> int = "%identity"
+external fd_of_int : int -> Unix.file_descr = "%identity"
+
 type t = {
   handle      : Kafka_raw.kafka_handle;
   config      : config;
   stream      : message Eio.Stream.t;
   closed      : bool Atomic.t;
+  (* Both ends kept so close can explicitly close them — Eio_unix.pipe ties
+     their fd lifetime to the *switch*, not to this value's own lifetime
+     (same reasoning as kafka_producer.ml's identical pipe fields). *)
+  wake_source : Eio_unix.source_ty Eio.Std.r;
+  wake_sink   : Eio_unix.sink_ty Eio.Std.r;
+  (* write end of the consumer-queue wake pipe; -1 until poll_fiber starts.
+     close t writes one byte here to unblock the daemon's single_read once
+     consumer_queue_events_disable has stopped librdkafka from writing to it
+     on its own — mirrors kafka_producer.ml's wake_fd/close exactly. *)
+  wake_fd     : int Atomic.t;
   poll_exited : unit Eio.Promise.t;
   poll_exit_r : unit Eio.Promise.u;
   (* Last explicitly-committed offset per partition, updated by every
@@ -80,10 +95,29 @@ let conf_of_config (cfg : config) : (Kafka_raw.kafka_conf, string) result =
 let tuple_to_message (topic, partition, offset, key, value, timestamp, headers) =
   { topic; partition; offset; key; value; timestamp; headers }
 
-(* consumer_poll releases the OCaml runtime lock at the C level, so calling
-   it directly from a fiber is safe — the domain is not held during the
-   100ms block, and Cancelled is delivered cleanly when the call returns. *)
+(* Event-driven, like kafka_producer.ml's poll_fiber: consumer_queue_events_enable
+   wakes wake_source whenever the *consumer* queue (not the main queue —
+   kafka_producer.ml's enable_queue_events watches the main queue, which never
+   carries consumer messages) transitions empty -> non-empty. On wake, drain
+   with consumer_queue_poll's timeout_ms=0, which returns essentially
+   instantly. No call in this loop ever blocks the calling thread for a real
+   duration — unlike the old consumer_poll(handle, 100), whose 100ms blocking
+   call sat inside a foreign C call for that whole window on every iteration.
+   That window was invisible to Eio's own single-threaded scheduler: releasing
+   the OCaml domain lock only unblocks other domains and the GC, not Eio's
+   io_uring reactor, which needs this exact OS thread back to service any
+   other fiber on it — concretely, this starved a concurrent Cohttp_eio.Server
+   HTTP listener on the same domain into never accepting a single connection
+   for as long as this consumer was alive, reproduced with a minimal repro of
+   just those two pieces (see ticket for the isolation steps). *)
 let poll_fiber t sw ~on_ready ~on_poll_error =
+  let wake_source = t.wake_source and wake_sink = t.wake_sink in
+  let write_fd_int =
+    Eio_unix.Fd.use_exn "kafka_consumer_queue_wake_fd"
+      (Eio_unix.Resource.fd wake_sink) int_of_fd
+  in
+  Atomic.set t.wake_fd write_fd_int;
+  Kafka_raw.consumer_queue_events_enable t.handle write_fd_int;
   (* Must be a daemon fiber, not a plain Fiber.fork: close/destroy run from
      an Eio.Switch.on_release hook (registered in create below), and
      on_release hooks don't fire until every non-daemon fiber forked into
@@ -95,38 +129,51 @@ let poll_fiber t sw ~on_ready ~on_poll_error =
      below in consume_partitioned's stop watchdog; applying the same fix
      here at the source. *)
   Eio.Fiber.fork_daemon ~sw (fun () ->
+    let wake_buf = Cstruct.create 4096 in
     let notified = ref false in
     let prev_assignment = ref None in
+    (* Drains every message currently queued (consumer_queue_poll 0 until
+       Timeout), checking assignment on every message the same way the old
+       loop checked it every ~100ms — a rebalance that lands with no message
+       following it won't be caught here until the next wake, which is the
+       one behavioral difference from the old fixed-cadence loop (flagged in
+       the ticket for a follow-up rebalance-idle test). *)
+    let rec drain () =
+      let assignment = Kafka_raw.assignment t.handle |> List.sort compare in
+      if Some assignment <> !prev_assignment then begin
+        if Option.is_some !prev_assignment then Hashtbl.reset t.last_processed;
+        prev_assignment := Some assignment
+      end;
+      if not !notified && assignment <> [] then begin
+        notified := true; on_ready ()
+      end;
+      match Kafka_raw.consumer_queue_poll t.handle 0 with
+      | Kafka_raw.Timeout -> ()
+      | Kafka_raw.Msg tup ->
+        if not !notified then begin notified := true; on_ready () end;
+        Eio.Stream.add t.stream (tuple_to_message tup);
+        drain ()
+      | Kafka_raw.Poll_error code ->
+        (* Surfaced rather than silently dropped — auth failures, unknown
+           topics, and max-poll-interval violations used to look identical
+           to "no message available", so a service could spin forever
+           never learning the consumer was dead or unauthorized. *)
+        on_poll_error code;
+        drain ()
+    in
     let rec loop () =
-      if Atomic.get t.closed then `Stop_daemon
-      else begin
-        let assignment = Kafka_raw.assignment t.handle |> List.sort compare in
-        if Some assignment <> !prev_assignment then begin
-          if Option.is_some !prev_assignment then Hashtbl.reset t.last_processed;
-          prev_assignment := Some assignment
-        end;
-        match Kafka_raw.consumer_poll t.handle 100 with
-        | Kafka_raw.Timeout ->
-          if not !notified && assignment <> [] then begin
-            notified := true; on_ready ()
-          end;
-          Eio.Fiber.yield (); loop ()
-        | Kafka_raw.Msg tup ->
-          if not !notified then begin notified := true; on_ready () end;
-          Eio.Stream.add t.stream (tuple_to_message tup);
-          loop ()
-        | Kafka_raw.Poll_error code ->
-          (* Surfaced rather than silently dropped — auth failures, unknown
-             topics, and max-poll-interval violations used to look identical
-             to "no message available", so a service could spin forever
-             never learning the consumer was dead or unauthorized. *)
-          on_poll_error code;
-          Eio.Fiber.yield (); loop ()
-      end
+      if Atomic.get t.closed then ()
+      else
+        match Eio.Flow.single_read wake_source wake_buf with
+        | exception (Eio.Cancel.Cancelled _) -> ()
+        | exception End_of_file -> ()
+        | _n -> drain (); loop ()
     in
     Fun.protect
       ~finally:(fun () -> Eio.Promise.resolve t.poll_exit_r ())
-      (fun () -> try loop () with Eio.Cancel.Cancelled _ -> `Stop_daemon))
+      (fun () ->
+        try drain (); loop (); `Stop_daemon
+        with Eio.Cancel.Cancelled _ -> `Stop_daemon))
 
 let close t =
   if Atomic.compare_and_set t.closed false true then
@@ -141,6 +188,21 @@ let close t =
        see t.closed = true and exit on its own. Draining creates space, unblocks
        the add, and lets the poll fiber reach its t.closed check. *)
     Eio.Cancel.protect (fun () ->
+      Kafka_raw.consumer_queue_events_disable t.handle;
+      (* Disabling stops librdkafka from writing any *more* wake bytes, but
+         the poll fiber may already be blocked in single_read waiting for one
+         (the common case — no messages in flight). Same wake-then-await
+         pattern as kafka_producer.ml's close: write one byte ourselves so
+         the fiber unblocks, reaches its t.closed check, and exits on its
+         own rather than this loop spinning on a read that will never
+         complete. *)
+      let wfd = Atomic.get t.wake_fd in
+      if wfd >= 0 then begin
+        let buf = Bytes.make 1 '\x01' in
+        (try ignore (Unix.write (fd_of_int wfd) buf 0 1)
+         with Unix.Unix_error (Unix.EPIPE, _, _) -> ()
+            | Unix.Unix_error _ -> ())
+      end;
       let rec drain_until_exited () =
         while not (Eio.Stream.is_empty t.stream) do
           ignore (Eio.Stream.take_nonblocking t.stream)
@@ -152,7 +214,9 @@ let close t =
       in
       drain_until_exited ();
       Kafka_raw.consumer_close t.handle;
-      Kafka_raw.destroy t.handle)
+      Kafka_raw.destroy t.handle;
+      Eio.Flow.close t.wake_source;
+      Eio.Flow.close t.wake_sink)
 
 let default_on_poll_error code =
   Printf.eprintf "kafka-eio: consumer poll error: %s\n%!"
@@ -171,11 +235,15 @@ let create ?(on_ready = ignore) ?(on_poll_error = default_on_poll_error) (cfg : 
        Result.error (Kafka_error.Config_error msg)
      | Ok () ->
        let (poll_exited, poll_exit_r) = Eio.Promise.create () in
+       let (wake_source, wake_sink) = Eio_unix.pipe sw in
        let t = {
          handle      = rk_handle;
          config      = cfg;
          stream      = Eio.Stream.create 256;
          closed      = Atomic.make false;
+         wake_source;
+         wake_sink;
+         wake_fd     = Atomic.make (-1);
          poll_exited;
          poll_exit_r;
          last_processed = Hashtbl.create 4;

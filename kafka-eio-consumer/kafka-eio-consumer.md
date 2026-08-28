@@ -106,21 +106,30 @@ back offsets across revoke/reassign. Before 1.0, decide whether to expose
 librdkafka rebalance callback and taking on responsibility for calling
 assign/unassign, per librdkafka's contract).
 
-## Polling Model (current limitation, pre-1.0)
+## Polling Model
 
-The producer's internal poll fiber is fully event-driven: it registers an
-fd with librdkafka via `rd_kafka_queue_io_event_enable` and only drains
-`rd_kafka_poll` after that fd wakes, so it costs zero CPU while idle.
+Both producer and consumer poll fibers are event-driven. The producer
+watches librdkafka's main queue and drains `rd_kafka_poll` after wakeup;
+the consumer watches `rd_kafka_queue_get_consumer` and drains
+`rd_kafka_consume_queue(queue, 0)`. Neither fiber blocks its Eio scheduler
+thread while idle.
 
-The consumer's poll fiber instead calls `Kafka_raw.consumer_poll t.handle
-100` in a loop — a 100ms-timeout blocking call, not an event wakeup. The C
-stub releases the OCaml runtime lock for the call, so it does not block
-other fibers/domains, and it is not a busy-loop, but it wakes on a fixed
-interval even when idle rather than only when a message actually arrives.
-This has not been profiled under load in this repo. Before 1.0: measure
-idle CPU and message-to-delivery latency under realistic load; only move
-the consumer to the same queue-event model as the producer if that
-profiling shows it matters.
+The consumer used to call `Kafka_raw.consumer_poll t.handle 100` in a loop.
+That released the OCaml runtime lock, but still left the Eio scheduler's OS
+thread inside a blocking C call. `sun` reproduced this with `Service.run`
+and `Worker.Make(W).run` in one process: HTTP requests stopped being read
+while the worker consumer was alive. Moving the consumer to queue wakeups
+removes that class of scheduler interference.
+
+A bare kafka-eio-only repro has not been found yet: isolated attempts with
+`Kafka_consumer.t`, `Kafka_producer.t`, and a plain `Cohttp_eio.Server`
+responded correctly even with the old blocking implementation. Until a
+smaller repro exists, `sun`'s `examples/local-demo` e2e test is the
+regression signal for this bug.
+
+Pure rebalances still wake the consumer queue. This was checked with two
+consumers and no produced messages; assignment is therefore tracked per
+wakeup instead of by a fixed 100ms poll cadence.
 
 ## Consumer Handle
 

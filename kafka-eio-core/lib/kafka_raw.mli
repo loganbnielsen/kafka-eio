@@ -83,6 +83,22 @@ type poll_result =
 
 val consumer_poll     : kafka_handle -> int -> poll_result
 
+(** [consumer_queue_events_enable handle write_fd] registers [write_fd] with
+    the consumer queue, distinct from the main queue used by producers. Call
+    [consumer_queue_poll handle 0] after waking on the matching read end. *)
+val consumer_queue_events_enable : kafka_handle -> int -> unit
+
+(** [consumer_queue_events_disable handle] clears the io-event callback
+    registered by [consumer_queue_events_enable]. Call during consumer
+    shutdown before closing the pipe so librdkafka cannot write to a recycled
+    file descriptor. *)
+val consumer_queue_events_disable : kafka_handle -> unit
+
+(** [consumer_queue_poll handle timeout_ms] reads at most one message from the
+    consumer queue via [rd_kafka_consume_queue], with [consumer_poll]'s result
+    shape and error semantics. *)
+val consumer_queue_poll : kafka_handle -> int -> poll_result
+
 (** [produce_v handle topic_name partition value_opt key_opt correlation_id headers]
     Enqueues a message using rd_kafka_producev, supporting Kafka message headers.
     [headers] is transferred to librdkafka on success. [correlation_id = 0L] means

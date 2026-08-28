@@ -221,20 +221,14 @@ CAMLprim value ocaml_rd_kafka_subscribe(value handle_v, value topics_v) {
 /* consumer_poll — returns a message or None                            */
 /* ------------------------------------------------------------------ */
 
-CAMLprim value ocaml_rd_kafka_consumer_poll(value handle_v, value timeout_v) {
-  CAMLparam2(handle_v, timeout_v);
+/* Must be called with the OCaml runtime lock held. */
+static value poll_result_of_message(rd_kafka_message_t *msg) {
+  CAMLparam0();
   CAMLlocal3(msg_rec, some_v, key_opt);
   CAMLlocal3(hdr_list, hdr_cell, hdr_pair);
   CAMLlocal3(topic_v, part_v, offset_v);
   CAMLlocal3(val_opt, val_bytes, ts_opt);
   CAMLlocal3(hdr_name_v, hdr_val_bytes, hdr_val_opt);
-
-  rd_kafka_t *rk = *((rd_kafka_t **)Data_custom_val(handle_v));
-  int timeout_ms = Int_val(timeout_v);          /* read before releasing lock */
-  caml_release_runtime_system();
-  rd_kafka_message_t *msg = rd_kafka_consumer_poll(rk, timeout_ms);
-  caml_acquire_runtime_system();
-  /* all OCaml allocation below — safe after re-acquiring */
 
   if (!msg)
     CAMLreturn(Val_int(0)); /* Timeout */
@@ -352,6 +346,65 @@ CAMLprim value ocaml_rd_kafka_consumer_poll(value handle_v, value timeout_v) {
   some_v = caml_alloc(1, 0);      /* Msg msg_rec */
   Store_field(some_v, 0, msg_rec);
   CAMLreturn(some_v);
+}
+
+CAMLprim value ocaml_rd_kafka_consumer_poll(value handle_v, value timeout_v) {
+  CAMLparam2(handle_v, timeout_v);
+  rd_kafka_t *rk = *((rd_kafka_t **)Data_custom_val(handle_v));
+  int timeout_ms = Int_val(timeout_v);          /* read before releasing lock */
+  caml_release_runtime_system();
+  rd_kafka_message_t *msg = rd_kafka_consumer_poll(rk, timeout_ms);
+  caml_acquire_runtime_system();
+  /* all OCaml allocation below — safe after re-acquiring */
+  CAMLreturn(poll_result_of_message(msg));
+}
+
+/* ------------------------------------------------------------------ */
+/* consumer_queue_poll — read one message from the consumer queue.       */
+/* ------------------------------------------------------------------ */
+
+CAMLprim value ocaml_rd_kafka_consumer_queue_poll(value handle_v, value timeout_v) {
+  CAMLparam2(handle_v, timeout_v);
+  rd_kafka_t *rk = *((rd_kafka_t **)Data_custom_val(handle_v));
+  int timeout_ms = Int_val(timeout_v);
+  caml_release_runtime_system();
+  rd_kafka_queue_t *q = rd_kafka_queue_get_consumer(rk);
+  rd_kafka_message_t *msg = rd_kafka_consume_queue(q, timeout_ms);
+  rd_kafka_queue_destroy(q);
+  caml_acquire_runtime_system();
+  CAMLreturn(poll_result_of_message(msg));
+}
+
+/* ------------------------------------------------------------------ */
+/* consumer_queue_events_enable : kafka_handle -> write_fd -> unit      */
+/* Same io-event registration as enable_queue_events, but on the        */
+/* consumer queue rather than the main queue.                           */
+/* ------------------------------------------------------------------ */
+
+CAMLprim value ocaml_kafka_consumer_queue_events_enable(value handle_v, value write_fd_v) {
+  CAMLparam2(handle_v, write_fd_v);
+  rd_kafka_t *rk = *((rd_kafka_t **)Data_custom_val(handle_v));
+  int write_fd = Int_val(write_fd_v);
+  if (fcntl(write_fd, F_SETFL, O_NONBLOCK) < 0)
+    caml_failwith("kafka_consumer_queue_events_enable: fcntl(O_NONBLOCK) failed");
+  rd_kafka_queue_t *q = rd_kafka_queue_get_consumer(rk);
+  static const char payload = 1;
+  rd_kafka_queue_io_event_enable(q, write_fd, &payload, sizeof(payload));
+  rd_kafka_queue_destroy(q);
+  CAMLreturn(Val_unit);
+}
+
+/* ------------------------------------------------------------------ */
+/* consumer_queue_events_disable : kafka_handle -> unit                 */
+/* ------------------------------------------------------------------ */
+
+CAMLprim value ocaml_kafka_consumer_queue_events_disable(value handle_v) {
+  CAMLparam1(handle_v);
+  rd_kafka_t *rk = *((rd_kafka_t **)Data_custom_val(handle_v));
+  rd_kafka_queue_t *q = rd_kafka_queue_get_consumer(rk);
+  rd_kafka_queue_io_event_enable(q, -1, NULL, 0);
+  rd_kafka_queue_destroy(q);
+  CAMLreturn(Val_unit);
 }
 
 /* ------------------------------------------------------------------ */

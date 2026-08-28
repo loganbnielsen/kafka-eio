@@ -338,7 +338,7 @@ let produce_await t ~topic ~value ?key ?(headers = []) () =
           Hashtbl.add t.pending corr_id resolver;
           corr_id)
     in
-    let rc : (unit, Kafka_error.t) result = match headers with
+    let send_result : (unit, Kafka_error.t) result = match headers with
       | [] ->
         (match get_or_create_topic t topic with
          | Error e -> Error e
@@ -351,7 +351,7 @@ let produce_await t ~topic ~value ?key ?(headers = []) () =
          | Ok () -> Ok ()
          | Error i -> err i)
     in
-    (match rc with
+    (match send_result with
      | Error e ->
        Mutex.lock t.mutex;
        Fun.protect

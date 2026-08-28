@@ -108,42 +108,28 @@ assign/unassign, per librdkafka's contract).
 
 ## Polling Model
 
-Both the producer's and the consumer's internal poll fibers are fully
-event-driven, and neither ever makes a call that blocks the calling thread
-for a real duration. The producer registers an fd with librdkafka via
-`rd_kafka_queue_io_event_enable` on the main queue and only drains
-`rd_kafka_poll` after that fd wakes; the consumer does the same on the
-*consumer* queue (`rd_kafka_queue_get_consumer` — the main queue never
-carries consumer messages), draining with `rd_kafka_consume_queue(queue,
-0)`. Both cost zero CPU while idle.
+Both producer and consumer poll fibers are event-driven. The producer
+watches librdkafka's main queue and drains `rd_kafka_poll` after wakeup;
+the consumer watches `rd_kafka_queue_get_consumer` and drains
+`rd_kafka_consume_queue(queue, 0)`. Neither fiber blocks its Eio scheduler
+thread while idle.
 
-The consumer used to call `Kafka_raw.consumer_poll t.handle 100` in a
-loop — a 100ms-timeout blocking call. The C stub correctly releases the
-OCaml runtime lock for that call, but releasing the domain lock only
-unblocks other domains and the GC; it does not hand control back to Eio's
-own single-threaded scheduler, which needs this exact OS thread back to
-service any other fiber on it. Confirmed with `sun`'s `-svc` + `-worker`
-combined into one process (`Service.run` + `Worker.Make(W).run`): the
-HTTP server stopped accepting connections entirely for as long as the
-consumer was alive, verified at the kernel level (the accepted
-connection's `Recv-Q` never drained). Fixed by moving to the event-driven
-model above.
+The consumer used to call `Kafka_raw.consumer_poll t.handle 100` in a loop.
+That released the OCaml runtime lock, but still left the Eio scheduler's OS
+thread inside a blocking C call. `sun` reproduced this with `Service.run`
+and `Worker.Make(W).run` in one process: HTTP requests stopped being read
+while the worker consumer was alive. Moving the consumer to queue wakeups
+removes that class of scheduler interference.
 
-That real-world repro needed `sun`'s own `Worker.Make`/`consume_partitioned`
-wrapping to reproduce — a bare `Kafka_consumer.t` alongside a bare
-`Kafka_producer.t` and a plain `Cohttp_eio.Server`, with no other Sun code
-involved, did *not* reproduce the stall in several isolated attempts. The
-exact trigger inside that extra layer isn't pinned down, so there's no
-regression test for this in this repo; `sun`'s own `examples/local-demo`
-e2e test is what actually caught this bug and is the regression signal for
-it until a minimal kafka-eio-only repro is found.
+A bare kafka-eio-only repro has not been found yet: isolated attempts with
+`Kafka_consumer.t`, `Kafka_producer.t`, and a plain `Cohttp_eio.Server`
+responded correctly even with the old blocking implementation. Until a
+smaller repro exists, `sun`'s `examples/local-demo` e2e test is the
+regression signal for this bug.
 
-Verified empirically (two-consumer rebalance with zero messages ever
-produced) that a pure rebalance — no message before or after it — still
-wakes the consumer's poll fiber: librdkafka enqueues the revoke/reassign
-transition onto the same consumer queue the wake fd watches, not just
-messages. Assignment is re-checked on every wake rather than the old
-fixed ~100ms cadence, and loses no responsiveness as a result.
+Pure rebalances still wake the consumer queue. This was checked with two
+consumers and no produced messages; assignment is therefore tracked per
+wakeup instead of by a fixed 100ms poll cadence.
 
 ## Consumer Handle
 

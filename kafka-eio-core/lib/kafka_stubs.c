@@ -221,12 +221,7 @@ CAMLprim value ocaml_rd_kafka_subscribe(value handle_v, value topics_v) {
 /* consumer_poll — returns a message or None                            */
 /* ------------------------------------------------------------------ */
 
-/* Shared by ocaml_rd_kafka_consumer_poll and ocaml_rd_kafka_consumer_queue_poll —
-   both ultimately consume one rd_kafka_message_t* from the same underlying
-   consumer queue (rd_kafka_consumer_poll is documented as equivalent to
-   consuming from rd_kafka_queue_get_consumer's queue), so the message shape
-   and error semantics are identical regardless of which C call produced msg.
-   Must be called with the OCaml runtime lock held — no lock handling here. */
+/* Must be called with the OCaml runtime lock held. */
 static value poll_result_of_message(rd_kafka_message_t *msg) {
   CAMLparam0();
   CAMLlocal3(msg_rec, some_v, key_opt);
@@ -365,13 +360,7 @@ CAMLprim value ocaml_rd_kafka_consumer_poll(value handle_v, value timeout_v) {
 }
 
 /* ------------------------------------------------------------------ */
-/* consumer_queue_poll — like consumer_poll, but reads one message      */
-/* directly off the consumer queue (rd_kafka_queue_get_consumer)        */
-/* instead of blocking inside rd_kafka_consumer_poll. Paired with       */
-/* consumer_queue_events_enable below: the OCaml poll_fiber sleeps on   */
-/* an Eio-readable wake pipe and only calls this with timeout_ms=0 once */
-/* librdkafka has signalled the queue transitioned non-empty — no       */
-/* thread-blocking C call sits in the fiber's loop at all. */
+/* consumer_queue_poll — read one message from the consumer queue.       */
 /* ------------------------------------------------------------------ */
 
 CAMLprim value ocaml_rd_kafka_consumer_queue_poll(value handle_v, value timeout_v) {
@@ -388,10 +377,8 @@ CAMLprim value ocaml_rd_kafka_consumer_queue_poll(value handle_v, value timeout_
 
 /* ------------------------------------------------------------------ */
 /* consumer_queue_events_enable : kafka_handle -> write_fd -> unit      */
-/* Same io-event registration as enable_queue_events above, but on the  */
-/* consumer queue rather than the main queue — the main queue never     */
-/* carries consumer messages, only admin/stats/error events, so         */
-/* registering there would never wake for a fetched message. */
+/* Same io-event registration as enable_queue_events, but on the        */
+/* consumer queue rather than the main queue.                           */
 /* ------------------------------------------------------------------ */
 
 CAMLprim value ocaml_kafka_consumer_queue_events_enable(value handle_v, value write_fd_v) {
@@ -409,9 +396,6 @@ CAMLprim value ocaml_kafka_consumer_queue_events_enable(value handle_v, value wr
 
 /* ------------------------------------------------------------------ */
 /* consumer_queue_events_disable : kafka_handle -> unit                 */
-/* Call before closing the wake pipe's fd, same reason as               */
-/* disable_queue_events above — otherwise a stale-fd write can land on  */
-/* a since-recycled fd after Eio closes the pipe. */
 /* ------------------------------------------------------------------ */
 
 CAMLprim value ocaml_kafka_consumer_queue_events_disable(value handle_v) {

@@ -54,16 +54,8 @@ type poll_result =
 external consumer_poll : kafka_handle -> int -> poll_result
   = "ocaml_rd_kafka_consumer_poll"
 
-(* Event-driven alternative to consumer_poll: consumer_queue_events_enable
-   registers write_fd to receive a wake byte whenever the consumer queue
-   (rd_kafka_queue_get_consumer — distinct from the main queue enable_queue_events
-   watches, which never carries consumer messages) transitions empty -> non-empty.
-   consumer_queue_poll then drains with timeout_ms=0 on wake, so no call in this
-   pair ever blocks the calling thread for a real duration — unlike consumer_poll,
-   whose 100ms blocking call sits inside a foreign C call for that whole window,
-   which is invisible to Eio's own single-threaded scheduler (releasing the OCaml
-   domain lock only unblocks other domains/GC, not Eio's io_uring reactor, since
-   that reactor's own progress needs this exact thread back). *)
+(* Event-driven consumer polling: wait on a consumer-queue wake fd, then drain
+   rd_kafka_consume_queue with timeout 0. *)
 external consumer_queue_events_enable : kafka_handle -> int -> unit
   = "ocaml_kafka_consumer_queue_events_enable"
 

@@ -149,9 +149,8 @@ let test_tombstone () =
           values;
         Kafka_consumer.close consumer
 
-(* Regression note: producer headers had no way to send a
-   NULL-valued header, even though the consumer read side already
-   preserved one as distinct from Some "" — this closes that gap. *)
+(* A producer-sent NULL-valued header must stay distinct from Some "",
+   mirroring the consumer read side. *)
 let test_header_with_null_value () =
   Eio_main.run @@ fun env ->
     Eio.Switch.run @@ fun sw ->

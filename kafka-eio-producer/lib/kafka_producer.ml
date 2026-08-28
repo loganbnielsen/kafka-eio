@@ -19,10 +19,9 @@ type t = {
   handle       : Kafka_raw.kafka_handle;
   topic_cache  : (string, Kafka_raw.kafka_topic) Hashtbl.t;
   delivery_mode: delivery_mode;
-  (* Both ends of both pipes are kept so close can explicitly close them —
-     Eio_unix.pipe ties their fd lifetime to the *switch*, not to this
-     value's own lifetime, so close must release them itself or they leak
-     until the switch (which may long outlive any one producer) ends. *)
+  (* Both ends of both pipes are closed explicitly by close, since
+     Eio_unix.pipe ties their fd lifetime to the switch, which may long
+     outlive any one producer. *)
   pipe_source  : Eio_unix.source_ty Eio.Std.r;
   delivery_sink: Eio_unix.sink_ty Eio.Std.r;
   wake_source  : Eio_unix.source_ty Eio.Std.r;
@@ -36,11 +35,9 @@ type t = {
   wake_fd      : int Atomic.t;
   poll_exited  : unit Eio.Promise.t;
   poll_exit_r  : unit Eio.Promise.u;
-  (* delivery_fiber blocks in Eio.Flow.read_exact, which a fixed-size-struct
-     read can't safely unblock with a wake byte (it would corrupt framing).
-     close instead races the read against this promise via Eio.Fiber.first
-     and awaits delivery_exited, so the pipes are provably unused by the
-     time close gets to closing them. *)
+  (* delivery_fiber blocks in Eio.Flow.read_exact; a wake byte would corrupt
+     the fixed-size-struct framing, so close instead races the read against
+     this promise and awaits delivery_exited before touching the pipes. *)
   delivery_stop    : unit Eio.Promise.t;
   delivery_stop_r  : unit Eio.Promise.u;
   delivery_exited  : unit Eio.Promise.t;
@@ -73,10 +70,8 @@ let conf_of_config (cfg : config) : (Kafka_raw.kafka_conf, string) result =
       let* () = set "enable.idempotence" "true" in
       set "transactional.id" transaction_id
   in
-  (* Applied after every typed/security default above, so advanced users can
-     override or extend with any librdkafka key this module has no typed
-     field for (client.id, statistics.interval.ms, custom SASL mechanisms,
-     ...) without waiting on a new config field. *)
+  (* Applied last so callers can override or add any librdkafka key this
+     module has no typed field for. *)
   let* () =
     List.fold_left (fun acc (k, v) -> let* () = acc in set k v) (Ok ()) cfg.properties
   in
@@ -94,20 +89,14 @@ let get_or_create_topic t name =
       Printf.eprintf "kafka-eio: topic_new %S failed: %s\n%!" name msg;
       Error Kafka_error.Invalid_arg
 
-(* Reads delivery receipts from the pipe one struct at a time.
-   Eio.Flow.read_exact suspends via io_uring (IORING_OP_READV with a
-   cancel hook) until the C delivery callback writes exactly one
-   delivery_result_t to the pipe, then resumes the fiber instantly.
-   No Unix.select, no arbitrary timeout, no drain loop — each iteration
-   reads exactly sizeof(delivery_result_t) bytes and resolves the
-   corresponding pending promise before looping back to wait again.
-   buf is allocated once and reused; it is safe to mutate because
-   parsing is strictly synchronous with no yields between read and use.
+(* Reads delivery receipts from the pipe one struct at a time via
+   Eio.Flow.read_exact, which suspends on io_uring and resumes when the C
+   delivery callback writes one delivery_result_t. buf is reused safely
+   since parsing is synchronous with no yields between read and use.
 
-   The blocked read is interrupted by racing it against delivery_stop via
-   Eio.Fiber.first, rather than writing a wake byte the way poll_fiber
-   does — a fixed-size struct read has no way to distinguish a wake byte
-   from real framing, so writing one would corrupt the next read. *)
+   The blocked read is interrupted by racing against delivery_stop rather
+   than a wake byte, since a fixed-size struct read can't distinguish a
+   wake byte from real framing. *)
 let delivery_fiber t sw =
   let sz  = Kafka_raw.delivery_sizeof () in
   let buf = Cstruct.create sz in
@@ -141,19 +130,16 @@ let delivery_fiber t sw =
     Eio.Promise.resolve t.delivery_exit_r ();
     `Stop_daemon)
 
-(* Sleeps at 0% CPU on the wake_source read end.  librdkafka writes one byte
-   to the matching write end whenever its main queue transitions from empty to
-   non-empty (via enable_queue_events — edge-triggered).  On wake-up we drain
-   all pending events with poll(rk,0) — which fires delivery callbacks that
-   write receipts to the delivery pipe — then yield so the Eio scheduler can
-   process io_uring completions from delivery_fiber and the HTTP calls.
-   Two safety measures:
-   - write end is set O_NONBLOCK so librdkafka's background thread never
-     blocks if the pipe buffer fills up (writes fail silently; the drain loop
-     handles all accumulated events regardless of how many wake bytes arrived).
-   - a seed drain runs once before the loop to process events that landed in
-     the queue between kafka_new and enable_queue_events, which would never
-     trigger the edge notification. *)
+(* Sleeps at 0% CPU on wake_source; librdkafka writes one byte to the
+   matching write end when its main queue goes empty -> non-empty
+   (edge-triggered, via enable_queue_events). On wake we drain with
+   poll(rk,0), firing delivery callbacks, then yield so Eio can process
+   delivery_fiber's io_uring completions.
+
+   write_fd is O_NONBLOCK so librdkafka's thread never blocks if the pipe
+   fills (the drain loop catches up regardless of how many bytes arrived);
+   a seed drain runs once before the loop for events that landed before
+   enable_queue_events was registered. *)
 let poll_fiber t sw =
   let wake_source = t.wake_source and wake_sink = t.wake_sink in
   (* ocaml_kafka_enable_queue_events sets O_NONBLOCK on write_fd itself. *)
@@ -187,10 +173,9 @@ let poll_fiber t sw =
 
 let close t =
   if Atomic.compare_and_set t.closed false true then
-    (* Eio.Cancel.protect ensures flush + destroy always run even when the
-       enclosing fiber is cancelled mid-shutdown. Without this, librdkafka's
-       background threads keep running (and sending to the wake/delivery pipe fds),
-       which can corrupt unrelated Eio resources after fd recycling. *)
+    (* flush + destroy must run even if the enclosing fiber is cancelled
+       mid-shutdown, or librdkafka's background threads keep sending to fds
+       that may get recycled by unrelated Eio resources. *)
     Eio.Cancel.protect (fun () ->
       let wfd = Atomic.get t.wake_fd in
       if wfd >= 0 then begin
@@ -201,17 +186,15 @@ let close t =
             | Unix.Unix_error _ -> ());
         Eio.Promise.await t.poll_exited
       end;
-      (* flush does its own internal polling, which still fires delivery
-         callbacks for messages acked during this call — so delivery_fiber
-         must stay alive through flush to resolve those produce_await
-         promises accurately, and is only stopped once flush has returned. *)
+      (* flush's internal polling still fires delivery callbacks, so
+         delivery_fiber must stay alive through flush and is stopped only
+         after it returns. *)
       ignore (Kafka_raw.flush t.handle 5000);
       Eio.Promise.resolve t.delivery_stop_r ();
       Eio.Promise.await t.delivery_exited;
-      (* Resolve any produce_await promises that never saw a delivery
-         receipt — the pipe can drop one under backpressure (see
-         ocaml_kafka_pipe_create), or flush itself can time out — so a
-         fiber awaiting one would otherwise hang forever after close. *)
+      (* Resolve any produce_await promises that never got a delivery
+         receipt — the pipe can drop one under backpressure, or flush can
+         time out — so a waiting fiber doesn't hang after close. *)
       let leftover =
         Mutex.lock t.mutex;
         Fun.protect
@@ -222,19 +205,14 @@ let close t =
             leftover)
       in
       List.iter (fun r -> Eio.Promise.resolve r (Error Kafka_error.Destroy)) leftover;
-      (* librdkafka's documented lifecycle contract requires every cached
-         topic object to be destroyed before the handle that created it —
-         relying solely on each kafka_topic's GC finalizer for this
-         (unspecified timing relative to the handle's own destroy below)
-         would risk violating that ordering (regression note). *)
+      (* librdkafka requires every cached topic destroyed before the handle
+         that created it; a GC finalizer alone doesn't guarantee that
+         ordering. *)
       Hashtbl.iter (fun _ rkt -> Kafka_raw.topic_destroy rkt) t.topic_cache;
       Hashtbl.reset t.topic_cache;
       Kafka_raw.destroy t.handle;
-      (* Both daemon fibers have confirmed exit above (poll_exited /
-         delivery_exited), so neither pipe is "in use" — safe to close
-         now. Eio_unix.pipe ties fd lifetime to the *switch*, not to this
-         value, so without this all four fds leak until sw itself ends,
-         however long that is. *)
+      (* Both daemons confirmed exit above, so no pipe is in use — safe to
+         close now rather than leak until sw ends. *)
       Eio.Flow.close t.pipe_source;
       Eio.Flow.close t.delivery_sink;
       Eio.Flow.close t.wake_source;
@@ -243,18 +221,14 @@ let close t =
 let create (cfg : config) ~sw =
   let (pipe_source, delivery_sink) = Eio_unix.pipe sw in
   let (wake_source, wake_sink) = Eio_unix.pipe sw in
-  (* Both ends of both pipes are managed by sw, so their fds stay open
-     until sw ends unless explicitly closed. Below this point, no fiber
-     has started using them yet, so any failure path can close them
-     directly rather than leaking until sw (which may long outlive this
-     one failed create call) ends. *)
+  (* No fiber is using the pipes yet, so a failed create can close them
+     directly instead of leaking until sw ends. *)
   let close_pipes () =
     Eio.Flow.close pipe_source;
     Eio.Flow.close delivery_sink;
     Eio.Flow.close wake_source;
     Eio.Flow.close wake_sink
   in
-  (* Extract the raw write-fd integer for the C delivery callback. *)
   let write_fd_int =
     Eio_unix.Fd.use_exn "kafka_write_fd"
       (Eio_unix.Resource.fd delivery_sink) int_of_fd
@@ -290,11 +264,9 @@ let create (cfg : config) ~sw =
     } in
     let start_fibers () =
       delivery_fiber t sw;
-      (* poll_fiber drains librdkafka's main queue so delivery callbacks fire
-         between explicit flush/commit_transaction calls too — without it, a
-         transactional producer's delivery reports (and thus produce_await
-         promises) only get serviced when a transaction happens to call
-         flush/commit/abort, not continuously like other delivery modes. *)
+      (* poll_fiber drains librdkafka's main queue so delivery callbacks
+         (and produce_await promises) fire continuously, not just when a
+         transaction happens to call flush/commit/abort. *)
       poll_fiber t sw;
       Eio.Switch.on_release sw (fun () -> close t);
       Ok t
@@ -412,10 +384,9 @@ let with_transaction t ?consumer_offsets f =
     (match Kafka_raw.begin_transaction t.handle with
      | Error e -> Error (Txn_failure (txn_failure_of_raw e))
      | Ok () ->
-       (* The interface promises abort on Error or exception. Without catching
-          the exception case, f raising leaves the transaction open: later
-          transactional calls fail with state/concurrent-transaction errors,
-          and produced records sit unresolved until timeout/fencing. *)
+       (* Must catch the exception case too, or f raising leaves the
+          transaction open: later transactional calls fail with
+          state/concurrent-transaction errors. *)
        match f () with
        | exception exn ->
          ignore (Kafka_raw.abort_transaction t.handle 5000);

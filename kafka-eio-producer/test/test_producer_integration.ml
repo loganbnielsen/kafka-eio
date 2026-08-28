@@ -74,10 +74,9 @@ let test_produce_many () =
         ) promises;
         Kafka_producer.close producer
 
-(* Regression note: with_transaction must abort on an exception
-   raised inside f, not just on Error — otherwise the transaction stays open
-   and every subsequent transactional call fails with a state/concurrent-
-   transaction error. *)
+(* with_transaction must abort on an exception raised inside f, not just
+   on Error, or the transaction stays open and later transactional calls
+   fail with a state/concurrent-transaction error. *)
 let test_with_transaction_aborts_on_exception () =
   Eio_main.run @@ fun _ ->
     Eio.Switch.run @@ fun sw ->
@@ -113,14 +112,10 @@ let test_with_transaction_aborts_on_exception () =
              (Kafka_producer.string_of_transaction_error e));
         Kafka_producer.close producer
 
-(* Regression note: send_offsets_to_transaction must commit exactly the
-   offsets the caller says it processed, not the consumer's
-   current assignment/position (which can be ahead of what was actually
-   processed). Proof: seed two messages, process only the first one inside
-   a transaction with an explicit ~consumer_offsets, then reopen a fresh
-   consumer in the same group and confirm the second (unprocessed) message
-   is still delivered — nothing was skipped past what the transaction
-   actually committed. *)
+(* send_offsets_to_transaction must commit exactly the offsets the caller
+   says it processed, not the consumer's current position. Seeds two
+   messages, processes only the first inside a transaction, then confirms
+   the second is still delivered to a fresh consumer in the same group. *)
 let test_transaction_commits_only_processed_offset () =
   Eio_main.run @@ fun env ->
     Eio.Switch.run @@ fun sw ->
@@ -213,11 +208,9 @@ let test_transaction_commits_only_processed_offset () =
               (Some "in-1") (Option.map Bytes.to_string second_msg.value);
             Kafka_consumer.close consumer2)
 
-(* Regression note: close left the delivery/wake pipes open,
-   reproduced empirically with real delivery round-trips against a live
-   broker (a fresh producer per cycle, one real produce_await each time —
-   the case that actually exercises delivery_fiber's blocked read and the
-   Eio.Fiber.first cancellation path, not just an idle one). *)
+(* Guards against close leaking the delivery/wake pipes when
+   delivery_fiber has an actual blocked read to cancel (not just an idle
+   producer). *)
 let test_close_does_not_leak_fds_with_real_deliveries () =
   Eio_main.run @@ fun _ ->
     Eio.Switch.run @@ fun sw ->

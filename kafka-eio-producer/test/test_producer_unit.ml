@@ -1,13 +1,9 @@
-(** Unit tests for kafka-eio-producer that don't require a live broker.
-    Regression coverage for use-after-close, and close resolving pending produce_await.
+(** Unit tests for kafka-eio-producer that don't require a live broker:
+    use-after-close, and close resolving pending produce_await.
 
-    Finding #7 (topic_new can return a null pointer that a later produce
-    would crash on) is fixed at the FFI layer (Kafka_raw.topic_new now
-    returns a result), but is not covered by a regression test here: this
-    librdkafka build's rd_kafka_topic_new does not validate topic name
-    syntax locally (empty and oversized names both succeed and only fail
-    once a real broker rejects them), so there is no reliable local trigger
-    for the failure path to assert against. *)
+    topic_new's null-pointer failure path (Kafka_raw.topic_new returning a
+    result) has no test here: this librdkafka build doesn't validate topic
+    name syntax locally, so there's no reliable local trigger for it. *)
 
 let unreachable_config : Kafka_producer.config =
   { brokers       = ["127.0.0.1:1"]
@@ -53,11 +49,9 @@ let test_close_resolves_pending_produce_await () =
            Alcotest.fail "expected the pending promise to resolve to Error after close"
          | Ok (Error _) -> ())
 
-(* Regression note: close left both the delivery pipe and the
-   poll wake pipe open — Eio_unix.pipe ties their fd lifetime to the
-   *switch*, not to the producer value, and close never explicitly closed
-   either pipe. Reproduced empirically: 5 create/close cycles on one
-   still-open switch grew /proc/self/fd by +4 fds every cycle. *)
+(* Guards against close leaking the delivery/wake pipes — Eio_unix.pipe
+   ties their fd lifetime to the switch, not the producer value, so close
+   must close them explicitly. *)
 let test_close_does_not_leak_pipe_fds () =
   if not (Sys.file_exists "/proc/self/fd") then
     Alcotest.skip ();

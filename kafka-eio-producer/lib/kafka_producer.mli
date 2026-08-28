@@ -36,10 +36,7 @@ val close : t -> unit
 
 (** [create_topic t ~topic_name ~partitions ~replication_factor] creates a
     topic via librdkafka's admin API, reusing this producer's handle.
-    Treats an already-existing topic as success. Does not leak
-    [Kafka_raw.kafka_handle] the way an earlier [raw_handle] accessor did —
-    [Kafka_raw] is internal to kafka-eio-core and not part of this
-    package's public surface. *)
+    Treats an already-existing topic as success. *)
 val create_topic
   :  t
   -> topic_name:string

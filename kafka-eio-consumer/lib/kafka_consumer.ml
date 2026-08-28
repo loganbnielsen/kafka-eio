@@ -133,11 +133,12 @@ let poll_fiber t sw ~on_ready ~on_poll_error =
     let notified = ref false in
     let prev_assignment = ref None in
     (* Drains every message currently queued (consumer_queue_poll 0 until
-       Timeout), checking assignment on every message the same way the old
-       loop checked it every ~100ms — a rebalance that lands with no message
-       following it won't be caught here until the next wake, which is the
-       one behavioral difference from the old fixed-cadence loop (flagged in
-       the ticket for a follow-up rebalance-idle test). *)
+       Timeout). Verified empirically (two-consumer probe, zero messages ever
+       produced) that a pure rebalance — no message before or after it —
+       still wakes this fiber: librdkafka enqueues the revoke/reassign
+       transition onto the same consumer queue this fd watches, not just
+       messages, so checking assignment here on every wake (rather than on a
+       fixed ~100ms cadence like the old loop) loses no responsiveness. *)
     let rec drain () =
       let assignment = Kafka_raw.assignment t.handle |> List.sort compare in
       if Some assignment <> !prev_assignment then begin
@@ -157,8 +158,14 @@ let poll_fiber t sw ~on_ready ~on_poll_error =
         (* Surfaced rather than silently dropped — auth failures, unknown
            topics, and max-poll-interval violations used to look identical
            to "no message available", so a service could spin forever
-           never learning the consumer was dead or unauthorized. *)
+           never learning the consumer was dead or unauthorized.
+           Yield before recursing: a persistent error condition (e.g. a
+           standing auth failure) makes every consumer_queue_poll return
+           Poll_error immediately, and without a yield here this recursion
+           would spin as tightly as the bug this whole fix removed — the
+           old loop's Poll_error branch yielded for the same reason. *)
         on_poll_error code;
+        Eio.Fiber.yield ();
         drain ()
     in
     let rec loop () =

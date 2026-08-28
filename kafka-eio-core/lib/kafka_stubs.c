@@ -25,10 +25,10 @@
 /* Custom block ops and finalizers                                      */
 /* ------------------------------------------------------------------ */
 
-/* The GC finalizer is a no-op: Kafka_producer.close() calls ocaml_rd_kafka_destroy
-   which nulls this pointer before destroying. Any non-null pointer here means
-   close() was not called — we accept the resource leak rather than risk blocking
-   the GC (rd_kafka_destroy can block for seconds waiting for broker I/O). */
+/* No-op: ocaml_rd_kafka_destroy nulls this pointer before destroying. A
+   non-null pointer here means close() was never called — the leak is
+   accepted rather than risk blocking the GC (rd_kafka_destroy can block
+   for seconds on broker I/O). */
 static void kafka_handle_finalize(value v) {
   *((rd_kafka_t **)Data_custom_val(v)) = NULL;
 }
@@ -87,11 +87,9 @@ static void delivery_cb(rd_kafka_t *rk,
   if (!msg->_private) return;   /* no correlation id — fire-and-forget */
   int write_fd = *((int *)opaque);
   delivery_result_t r;
-  /* Wire format is fixed little-endian regardless of host byte order —
-     OCaml decodes with Cstruct.LE. Without htole*, this struct is written
-     in the host's native order, which only happens to agree with LE on
-     the little-endian hosts (x86/ARM) this has been run on; a big-endian
-     host would decode garbage correlation ids and error codes. */
+  /* Wire format is fixed little-endian (OCaml decodes via Cstruct.LE)
+     regardless of host order; without htole*, a big-endian host would
+     write and later decode garbage correlation ids/error codes. */
   r.correlation_id = (int64_t)htole64((uint64_t)(uintptr_t)msg->_private);
   r.err            = (int32_t)htole32((uint32_t)msg->err);
   /* write is async-signal-safe and thread-safe. write_fd is O_NONBLOCK (see
@@ -256,12 +254,10 @@ static value poll_result_of_message(rd_kafka_message_t *msg) {
   part_v   = caml_copy_int32((int32_t)msg->partition);
   offset_v = caml_copy_int64((int64_t)msg->offset);
 
-  /* librdkafka gives a non-NULL msg->key with key_len == 0 for a genuine
-     zero-length key, and NULL only for "no key" — the same distinction
-     already made correctly for value/headers below. Gating on key_len > 0
-     too (regression note) collapsed a real zero-length key into
-     "no key", which Kafka partitions differently (hashed vs. round-robin/
-     sticky), silently on the read path only. */
+  /* A non-NULL msg->key with key_len == 0 is a genuine zero-length key,
+     distinct from NULL ("no key") — Kafka partitions these differently
+     (hashed vs. round-robin/sticky), so gating on key_len > 0 too would
+     silently misclassify a real zero-length key. */
   if (msg->key) {
     CAMLlocal1(key_bytes);
     key_bytes = caml_alloc_string(msg->key_len);
@@ -433,17 +429,12 @@ CAMLprim value ocaml_rd_kafka_topic_new(value handle_v, value name_v) {
   CAMLreturn(result);
 }
 
-/* Explicit destroy, mirroring ocaml_rd_kafka_destroy: nulls the pointer
-   first so the GC finalizer (kafka_topic_finalize) becomes a no-op,
-   making double-destroy impossible. librdkafka's own documented
-   lifecycle contract requires every topic object to be destroyed before
-   the handle that created it — relying solely on the GC finalizer for
-   this (unspecified timing relative to the handle's own destroy) risks
-   violating that ordering, so callers that cache kafka_topic values
-   (e.g. Kafka_producer's topic_cache) must destroy them explicitly
-   before destroying the handle. rd_kafka_topic_destroy is a local
-   refcount/state operation, not a network call — no domain-lock
-   release needed. */
+/* Nulls the pointer first so kafka_topic_finalize becomes a no-op —
+   double-destroy is impossible. librdkafka requires every topic object
+   destroyed before the handle that created it, so callers caching
+   kafka_topic values (e.g. Kafka_producer's topic_cache) must call this
+   explicitly rather than rely on GC finalizer timing. Local operation —
+   no domain-lock release needed. */
 CAMLprim value ocaml_rd_kafka_topic_destroy(value topic_v) {
   CAMLparam1(topic_v);
   rd_kafka_topic_t *rkt = *((rd_kafka_topic_t **)Data_custom_val(topic_v));
@@ -601,11 +592,10 @@ CAMLprim value ocaml_rd_kafka_destroy(value handle_v) {
   if (rk) {
     *((rd_kafka_t **)Data_custom_val(handle_v)) = NULL;
     /* Producer handles stash a malloc'd write-fd (see ocaml_rd_kafka_new)
-       as the delivery callback's opaque pointer, freed only on a
-       kafka_new failure until now — a successful producer's fd_ptr leaked
-       on every close. rd_kafka_opaque must be read before destroy, since
-       rk is invalid afterward; consumer handles never set one, so this is
-       NULL and free is a no-op. */
+       as the opaque delivery-callback pointer — must read it before
+       destroy invalidates rk, and free it here or it leaks every close.
+       Consumer handles never set one, so this is NULL and free is a
+       no-op. */
     void *fd_ptr = rd_kafka_opaque(rk);
     caml_release_runtime_system();
     rd_kafka_destroy(rk);
@@ -775,14 +765,11 @@ CAMLprim value ocaml_rd_kafka_commit_message(value handle_v, value topic_v,
   CAMLreturn(result);
 }
 
-/* commit_offsets: commits an explicit (topic, partition, last-processed-
-   offset) list in one call — used by Kafka_consumer.commit_all instead
-   of rd_kafka_commit(rk, NULL, ...), which commits each partition's
-   current fetch position rather than what was actually processed (see
-   Kafka_producer.send_offsets_to_transaction for the same fix applied to
-   the transactional path). An empty list commits nothing and succeeds
-   trivially, rather than erroring the way a NULL commit does when
-   nothing has been fetched/stored yet. */
+/* Commits an explicit (topic, partition, last-processed-offset) list —
+   used instead of rd_kafka_commit(rk, NULL, ...), which commits each
+   partition's current fetch position rather than what was actually
+   processed. An empty list succeeds trivially rather than erroring like
+   a NULL commit does when nothing has been fetched yet. */
 CAMLprim value ocaml_rd_kafka_commit_offsets(value handle_v, value offsets_v, value async_v)
 {
   CAMLparam3(handle_v, offsets_v, async_v);
@@ -929,13 +916,10 @@ CAMLprim value ocaml_rd_kafka_abort_transaction(value handle_v, value timeout_v)
   CAMLreturn(result);
 }
 
-/* [offsets_v] is an OCaml (string * int32 * int64) list: explicit
-   (topic, partition, offset-of-last-processed-message) tuples the caller
-   processed inside this transaction. This replaces the prior behavior of
-   reading rd_kafka_assignment(cons) directly, which committed the
-   consumer's assigned partitions rather than the offsets actually
-   processed — a transaction could advance past unprocessed messages if
-   the consumer's poll fiber had prefetched ahead. */
+/* [offsets_v]: explicit (topic, partition, offset-of-last-processed-message)
+   tuples the caller actually processed in this transaction — not the
+   consumer's current assignment/position, which could be ahead if the
+   poll fiber prefetched further than the caller has handled. */
 CAMLprim value ocaml_rd_kafka_send_offsets_to_transaction(
   value prod_v, value cons_v, value offsets_v, value timeout_v)
 {
@@ -994,14 +978,13 @@ CAMLprim value ocaml_kafka_delivery_sizeof(value unit) {
 /* write_fd) as a pair of ints                                          */
 /* ------------------------------------------------------------------ */
 
-/* The write end must be non-blocking: delivery_cb below writes one
-   delivery_result_t per acknowledged message from a librdkafka background
-   thread. If the read side falls behind and the pipe buffer fills, a
-   blocking write() would stall that librdkafka thread — and with it,
-   delivery, transactions, and shutdown. A full pipe under O_NONBLOCK instead
-   returns EAGAIN immediately, and delivery_cb below drops that one receipt
-   rather than block. The read end is left blocking; Eio's io_uring-based
-   reads do not require O_NONBLOCK. */
+/* The write end must be non-blocking: delivery_cb writes one
+   delivery_result_t per ack from a librdkafka background thread. If the
+   read side falls behind and the pipe fills, a blocking write() would
+   stall that thread (and delivery/transactions/shutdown with it) — under
+   O_NONBLOCK it instead returns EAGAIN and delivery_cb drops the receipt.
+   The read end stays blocking; Eio's io_uring reads don't need
+   O_NONBLOCK. */
 CAMLprim value ocaml_kafka_pipe_create(value unit) {
   CAMLparam1(unit);
   CAMLlocal1(pair);

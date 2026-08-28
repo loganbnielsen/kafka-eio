@@ -168,10 +168,9 @@ type t =
   | Log_truncation
   | End
   | Err_unknown of int
-  (* Not one of librdkafka's generated response codes above. Producer/
-     consumer construction (config validation, [rd_kafka_new], [subscribe])
-     fails with only a string message, no response code — this carries that
-     message instead of collapsing it to a generic [Application]/[Transport]. *)
+  (* Not a librdkafka response code: carries the string message from
+     constructors (config validation, [rd_kafka_new], [subscribe]) that
+     fail without one. *)
   | Config_error of string
 
 val of_int     : int -> t

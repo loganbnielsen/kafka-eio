@@ -96,12 +96,10 @@ let test_stream_api () =
         Alcotest.(check int) "stream yielded 4 messages" 4 (List.length !msgs);
         Kafka_consumer.close consumer
 
-(* Regression note: a Kafka tombstone (NULL payload) must stay
-   distinguishable from a genuine zero-length value at the consumer FFI
-   boundary, and produce/produce_await must be able to send one at all.
-   Uses its own topic/group rather than the shared test_topic above, since
-   the other tests in this file share one consumer group and rely on
-   exact message counts across sequential test cases. *)
+(* A NULL payload (tombstone) must stay distinct from a genuine
+   zero-length value at the consumer FFI boundary. Uses its own
+   topic/group since the other tests here share test_topic with exact
+   message-count assertions. *)
 let test_tombstone () =
   Eio_main.run @@ fun env ->
     Eio.Switch.run @@ fun sw ->
@@ -201,11 +199,9 @@ let test_header_with_null_value () =
           msg.headers;
         Kafka_consumer.close consumer
 
-(* Regression note: the consumer's C decode gated a key on
-   [msg->key_len > 0] as well as non-NULL, collapsing a genuine
-   zero-length key into "no key" — the same bug class already fixed for
-   value/headers, missed on key. librdkafka gives a non-NULL msg->key
-   with key_len 0 for a real zero-length key, NULL only for no key. *)
+(* A non-NULL msg->key with key_len 0 is a genuine zero-length key,
+   distinct from NULL ("no key") — must stay that way through the
+   consumer FFI decode too. *)
 let test_zero_length_key_distinct_from_no_key () =
   Eio_main.run @@ fun env ->
     Eio.Switch.run @@ fun sw ->
@@ -258,36 +254,17 @@ let test_zero_length_key_distinct_from_no_key () =
           keys;
         Kafka_consumer.close consumer
 
-(* Regression note: a partition fiber that stopped processing
-   without draining its own queue — on Stop, on exhausted retries, or on
-   being interrupted mid-retry-sleep by another partition's stop — left
-   that queue permanently full with nobody left to ever take from it
-   again. routing_loop's or the shutdown None-sentinel's Eio.Stream.add
-   into that abandoned queue then blocked forever, hanging the whole
-   consume_partitioned call past its own documented "blocks until
-   stopped, then returns" contract.
+(* A partition fiber that exits without draining its own queue — on
+   Stop, exhausted retries, or being interrupted mid-retry-sleep by
+   another partition's Stop — left that queue full with nobody to drain
+   it, hanging routing_loop's (or the shutdown sentinel's) blocking
+   Eio.Stream.add forever.
 
-   Reproduction: whichever partition the handler sees first ("stuck")
-   always errors, with retries bounded (max_attempts) so it is guaranteed
-   to self-exhaust and call signal_stop within a few seconds even if
-   routing_loop never manages to route anything from the other partition
-   first — librdkafka's own per-partition fetch batching means routing
-   order across partitions isn't controllable from here, and an earlier
-   version of this test with unbounded retries could wedge routing_loop
-   on the stuck partition's backlog before the other partition's message
-   ever got a chance to trigger Stop at all, which is a real, documented,
-   *pre-existing* routing_loop limitation (see the comment above
-   routing_loop) — separate from, and not a regression test for, the bug
-   this test is actually after. The first message from the other
-   partition (if routing gets to it before the stuck partition
-   self-exhausts) acks and returns Stop instead, exercising the specific
-   cross-partition interrupt-mid-retry-sleep path. Either way, the whole
-   call must still fully drain and return — before the fix, any of the
-   three early-exit paths involved (own exhaustion, own Stop, or being
-   interrupted by another partition's Stop) could abandon a full queue
-   and hang forever; Eio.Time.with_timeout is a safety net so a
-   regression fails this test cleanly instead of hanging the whole
-   suite. *)
+   Routing order across partitions isn't controllable here, so the
+   "stuck" partition self-exhausts via bounded retries regardless of
+   whether the other partition's Stop wins first; either way the call
+   must still return rather than hang, and the timeout is a safety net
+   so a regression fails cleanly instead of wedging the suite. *)
 let test_consume_partitioned_stop_does_not_hang () =
   Eio_main.run @@ fun env ->
     Eio.Switch.run @@ fun sw ->
@@ -354,16 +331,12 @@ let test_consume_partitioned_stop_does_not_hang () =
          | Ok (Error e) -> Alcotest.failf "unexpected handler error surfaced: %s" e);
         Kafka_consumer.close consumer
 
-(* Regression note: librdkafka's default enable.auto.offset.store
-   advances the "stored" position on every message poll_fiber prefetches
-   into t.stream, whether or not the application ever processed it (or
-   even took it off the stream) — so commit_all, which commits that
-   stored position for a NULL partition list, could silently commit past
-   messages the application never saw. Seed 5 messages, process (fetch +
-   explicit commit) only the first, call commit_all, close, then confirm
-   a fresh consumer in the same group still receives message index 1 —
-   proving commit_all only committed what was explicitly committed
-   elsewhere, not the whole prefetched backlog. *)
+(* librdkafka's default auto.offset.store advances the "stored" position
+   on every message poll_fiber prefetches, whether processed or not —
+   commit_all (which commits that position for a NULL partition list)
+   could silently commit past messages never actually processed. Process
+   only the first of 5 seeded messages, commit_all, then confirm a fresh
+   consumer in the group still receives message 1. *)
 let test_commit_all_does_not_commit_past_processed () =
   Eio_main.run @@ fun env ->
     Eio.Switch.run @@ fun sw ->
@@ -397,10 +370,9 @@ let test_commit_all_does_not_commit_past_processed () =
       (match Kafka_consumer.create cfg ~sw with
        | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka_error.to_string e)
        | Ok consumer ->
-         (* Give poll_fiber a moment to prefetch the whole backlog into
-            t.stream before we process just one message — this is the
-            precondition that made the stored position drift ahead of
-            what was actually processed. *)
+         (* Let poll_fiber prefetch the whole backlog before processing
+            just one message — the precondition for the stored position
+            to drift ahead of what was processed. *)
          Eio.Time.sleep env#clock 1.0;
          (match Kafka_consumer.fetch consumer with
           | Error e -> Alcotest.failf "fetch failed: %s" (Kafka_error.to_string e)
@@ -432,14 +404,11 @@ let test_commit_all_does_not_commit_past_processed () =
           (Some "1") (Option.map Bytes.to_string next.value);
         Kafka_consumer.close consumer2
 
-(* Regression note: calling Kafka_consumer.close directly
-   (instead of cancelling ~sw, the documented way to stop
-   consume_partitioned) never resolved consume_partitioned's internal
-   stop_p, so routing_loop's Fiber.first (racing Stream.take against
-   stop_p) blocked forever once poll_fiber stopped feeding t.stream —
-   hanging the call permanently. The handler here always returns
-   Continue, so the only way this call can ever return is via the
-   close-triggered watchdog. *)
+(* Closing the consumer directly (instead of cancelling ~sw) never
+   resolves consume_partitioned's internal stop_p, so routing_loop's
+   Fiber.first would block forever once poll_fiber stops feeding
+   t.stream. The handler here always returns Continue, so the only way
+   this call can return is via the close-triggered watchdog. *)
 let test_consume_partitioned_stops_on_direct_close () =
   Eio_main.run @@ fun env ->
     Eio.Switch.run @@ fun sw ->
@@ -488,24 +457,17 @@ let test_consume_partitioned_stops_on_direct_close () =
          | Ok (Ok ()) -> ()
          | Ok (Error _) -> Alcotest.fail "unexpected handler error")
 
-(* Regression note: last_processed (commit_all's source of
-   truth when auto_commit = false) was never invalidated across a
-   rebalance — a partition revoked from this consumer and later
-   reassigned back could still have its stale, pre-revoke offset
-   committed by commit_all, silently rolling the group's committed
-   position backward past whatever a second consumer in the same group
-   processed on that partition in the meantime.
+(* last_processed (commit_all's source of truth when auto_commit = false)
+   was never invalidated across a rebalance — a partition revoked and
+   later reassigned back could still have its stale, pre-revoke offset
+   committed by commit_all, rolling the group's committed position
+   backward past what a second consumer processed on it meanwhile.
 
-   Reproduction: c1 alone owns both partitions of a fresh topic and acks
-   everything on both. c2 then joins the same group, which (eager
-   assignment) revokes c1's whole assignment and splits the 2 partitions
-   between them; fresh messages are seeded so whichever partition(s) c2
-   ends up with have new data; both consumers drain and ack whatever
-   they can see. c2 then leaves, handing its partition(s) back to c1. c1
-   — which fetched nothing new on the reclaimed partition — calls
-   commit_all. A fresh consumer in the same group afterward must not
-   receive anything c2 already committed; if it does, c1's commit_all
-   rolled the group's committed offset backward. *)
+   c1 owns both partitions and acks everything; c2 joins (triggering an
+   eager-rebalance split) and both drain fresh data; c2 leaves, handing
+   its partition(s) back to c1, which calls commit_all having fetched
+   nothing new on the reclaimed partition. A fresh consumer afterward
+   must not re-receive anything c2 already committed. *)
 let test_commit_all_survives_rebalance () =
   Eio_main.run @@ fun env ->
     Eio.Switch.run @@ fun sw ->

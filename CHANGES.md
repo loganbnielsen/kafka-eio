@@ -1,5 +1,13 @@
 # Changes
 
+## Unreleased
+
+- Renamed a local `rc` binding in `produce_await` to `send_result` — the abbreviation
+  read ambiguously next to Kafka's own return-code conventions. No public API change.
+- Comment-only pass over the C stubs and consumer/producer: multi-paragraph rationale
+  and "regression note"/bug-number framing collapsed to one or two sentences. No logic
+  changes.
+
 ## 0.1.1
 
 - Add `/usr/local` and Homebrew C include/library paths for librdkafka on FreeBSD and

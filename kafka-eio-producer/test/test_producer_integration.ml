@@ -56,22 +56,25 @@ let test_produce_with_key () =
         Kafka_producer.close producer
 
 let test_produce_many () =
-  Eio_main.run @@ fun _ ->
+  Eio_main.run @@ fun env ->
     Eio.Switch.run @@ fun sw ->
       match Kafka_producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
       | Error e ->
         Alcotest.failf "create failed: %s" (Kafka_error.to_string e)
       | Ok producer ->
-        let promises = List.init 100 (fun i ->
+        let promises = List.init 1000 (fun i ->
           Kafka_producer.produce_await producer
             ~topic:test_topic
             ~value:(Some (Bytes.of_string (Printf.sprintf "msg-%04d" i))) ()
         ) in
-        List.iter (fun p ->
-          match Eio.Promise.await p with
-          | Error e -> Alcotest.failf "batch produce_await failed: %s" (Kafka_error.to_string e)
-          | Ok ()   -> ()
-        ) promises;
+        (match Eio.Time.with_timeout env#clock 30.0 (fun () ->
+           List.iter (fun p ->
+             match Eio.Promise.await p with
+             | Error e -> Alcotest.failf "batch produce_await failed: %s" (Kafka_error.to_string e)
+             | Ok ()   -> ()
+           ) promises) with
+         | Ok () -> ()
+         | Error `Timeout -> Alcotest.fail "timed out awaiting produce_await burst");
         Kafka_producer.close producer
 
 (* with_transaction must abort on an exception raised inside f, not just

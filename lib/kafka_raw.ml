@@ -105,10 +105,12 @@ external pipe_create : unit -> int * int
 
 external delivery_sizeof : unit -> int
   = "ocaml_kafka_delivery_sizeof"
-let () = ignore delivery_sizeof   (* suppress warning 32 — used by kafka_producer *)
 
 external read_delivery : int -> int64 * int
   = "ocaml_kafka_read_delivery"
+
+external next_delivery : kafka_handle -> (int64 * int) option
+  = "ocaml_kafka_next_delivery"
 
 type txn_error = {
   code           : int;

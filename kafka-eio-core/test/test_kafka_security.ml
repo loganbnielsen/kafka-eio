@@ -75,27 +75,33 @@ let test_of_env_rejects_unknown_sasl_mechanism () =
               (contains msg "GSSAPI")))))
 
 let test_plaintext_ok () =
-  let conf = Kafka_raw.conf_new () in
   Alcotest.(check bool) "plaintext → Ok" true
-    (Kafka_security.apply conf Kafka_security.default = Ok ())
+    (Kafka_security.settings Kafka_security.default = [ ("security.protocol", "plaintext") ])
 
 let test_ssl_no_sasl_ok () =
-  let conf = Kafka_raw.conf_new () in
   let sec = Kafka_security.Ssl { ssl_ca_location = None } in
   Alcotest.(check bool) "ssl without sasl → Ok" true
-    (Kafka_security.apply conf sec = Ok ())
+    (Kafka_security.settings sec = [ ("security.protocol", "ssl") ])
 
 let test_sasl_ssl_all_fields_ok () =
-  let conf = Kafka_raw.conf_new () in
   let sec = Kafka_security.Sasl_ssl { ssl_ca_location = None; sasl = full_sasl } in
   Alcotest.(check bool) "sasl_ssl all fields → Ok" true
-    (Kafka_security.apply conf sec = Ok ())
+    (Kafka_security.settings sec
+     = [ ("security.protocol", "sasl_ssl");
+         ("sasl.mechanism", "PLAIN");
+         ("sasl.username", "user");
+         ("sasl.password", "pass");
+       ])
 
 let test_sasl_plaintext_all_fields_ok () =
-  let conf = Kafka_raw.conf_new () in
   let sec = Kafka_security.Sasl_plaintext full_sasl in
   Alcotest.(check bool) "sasl_plaintext all fields → Ok" true
-    (Kafka_security.apply conf sec = Ok ())
+    (Kafka_security.settings sec
+     = [ ("security.protocol", "sasl_plaintext");
+         ("sasl.mechanism", "PLAIN");
+         ("sasl.username", "user");
+         ("sasl.password", "pass");
+       ])
 
 let () =
   Alcotest.run "kafka_security" [
@@ -106,10 +112,10 @@ let () =
       Alcotest.test_case "of_env rejects missing SASL fields" `Quick test_of_env_rejects_missing_sasl_fields;
       Alcotest.test_case "of_env rejects unknown SASL mechanism" `Quick test_of_env_rejects_unknown_sasl_mechanism;
     ];
-    "apply", [
-      Alcotest.test_case "plaintext ok"               `Quick test_plaintext_ok;
-      Alcotest.test_case "ssl no sasl ok"             `Quick test_ssl_no_sasl_ok;
-      Alcotest.test_case "sasl_ssl all fields ok"     `Quick test_sasl_ssl_all_fields_ok;
-      Alcotest.test_case "sasl_plaintext all fields ok" `Quick test_sasl_plaintext_all_fields_ok;
+    "settings", [
+      Alcotest.test_case "plaintext"               `Quick test_plaintext_ok;
+      Alcotest.test_case "ssl no sasl"             `Quick test_ssl_no_sasl_ok;
+      Alcotest.test_case "sasl_ssl all fields"     `Quick test_sasl_ssl_all_fields_ok;
+      Alcotest.test_case "sasl_plaintext all fields" `Quick test_sasl_plaintext_all_fields_ok;
     ];
   ]

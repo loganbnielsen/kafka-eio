@@ -72,8 +72,9 @@ val create
     handle. *)
 val close : t -> unit
 
-(** Expose the underlying handle for use with transactional producers. *)
-val handle : t -> Kafka_consumer_handle.t
+(** Opaque handle for {!Kafka_producer.with_transaction}'s
+    [consumer_offsets] argument. *)
+val handle : t -> Kafka_producer.consumer_handle
 
 (** Returns an Eio stream that yields messages as they arrive.
     Backpressure is applied via stream capacity. *)

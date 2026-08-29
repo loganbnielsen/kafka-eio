@@ -72,7 +72,11 @@ let conf_of_config (cfg : config) : (Kafka_raw.kafka_conf, string) result =
      (range,roundrobin) so subscribe() -> poll() -> assignment_count > 0
      works without one. *)
   let* () = set "partition.assignment.strategy" "range,roundrobin" in
-  let* () = Kafka_security.apply conf cfg.security in
+  let* () =
+    List.fold_left
+      (fun acc (k, v) -> let* () = acc in set k v)
+      (Ok ()) (Kafka_security.settings cfg.security)
+  in
   (* Applied last so callers can override or add any librdkafka key this
      module has no typed field for. *)
   let* () =
@@ -201,7 +205,8 @@ let create ?(on_ready = ignore) ?(on_poll_error = default_on_poll_error) (cfg : 
 
 let is_closed t = Atomic.get t.closed
 
-let handle t = Kafka_consumer_handle.of_raw t.handle
+let handle t : Kafka_producer.consumer_handle =
+  Kafka_producer.consumer_handle (Kafka_consumer_handle.of_raw t.handle)
 
 (* Every explicit commit path (commit, consume's ack, consume_partitioned's
    ack) goes through here so commit_all can later commit exactly what was

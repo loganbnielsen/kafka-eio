@@ -103,6 +103,14 @@ type txn_failure = {
   requires_abort : bool;
 }
 
+type consumer_handle
+
+(**/**)
+
+val consumer_handle : Kafka_consumer_handle.t -> consumer_handle
+
+(**/**)
+
 type transaction_error =
   | App_error of Kafka_error.t  (** [f] returned [Error _], or raised. *)
   | Txn_failure of txn_failure  (** a transactional-API call itself failed. *)
@@ -122,6 +130,6 @@ val string_of_transaction_error : transaction_error -> string
     never advance past a message [f] did not actually process. *)
 val with_transaction
   :  t
-  -> ?consumer_offsets:(Kafka_consumer_handle.t * (string * int32 * int64) list)
+  -> ?consumer_offsets:(consumer_handle * (string * int32 * int64) list)
   -> (unit -> (unit, Kafka_error.t) result)
   -> (unit, transaction_error) result

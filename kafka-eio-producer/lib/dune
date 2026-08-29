@@ -1,6 +1,0 @@
-(library
- (name kafka_eio_producer)
- (public_name kafka-eio.producer)
- (wrapped false)
- (modules kafka_producer)
- (libraries kafka_eio_core eio eio.unix unix cstruct))

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Public modules now ship as one `kafka-eio` library. The raw librdkafka FFI
+  module is private; supported caller-facing modules are `Kafka_producer`,
+  `Kafka_consumer`, `Kafka_error`, `Kafka_security`, and `Kafka`.
+- `Kafka_security` exposes librdkafka key/value `settings` instead of an
+  `apply` function over raw Kafka config values.
+- Transactional consumer offsets now use `Kafka_producer.consumer_handle`, an
+  opaque token returned by `Kafka_consumer.handle`, without exposing raw
+  librdkafka handles.
+- `Kafka_producer.produce_await` delivery receipts are no longer lossy under
+  pipe backpressure. The C delivery callback now queues receipts in native
+  memory and uses the pipe only as a wakeup, so a full pipe cannot strand an
+  awaiting promise until shutdown.
 - Renamed a local `rc` binding in `produce_await` to `send_result` — the abbreviation
   read ambiguously next to Kafka's own return-code conventions. No public API change.
 - Comment-only pass over the C stubs and consumer/producer: multi-paragraph rationale

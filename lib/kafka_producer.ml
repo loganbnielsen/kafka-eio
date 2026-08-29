@@ -58,7 +58,11 @@ let conf_of_config (cfg : config) : (Kafka_raw.kafka_conf, string) result =
     | Some ms -> set "linger.ms" (string_of_int ms)
     | None    -> Ok ()
   in
-  let* () = Kafka_security.apply conf cfg.security in
+  let* () =
+    List.fold_left
+      (fun acc (k, v) -> let* () = acc in set k v)
+      (Ok ()) (Kafka_security.settings cfg.security)
+  in
   let* () = match cfg.delivery_mode with
     | At_most_once ->
       set "acks" "0"
@@ -89,17 +93,30 @@ let get_or_create_topic t name =
       Printf.eprintf "kafka-eio: topic_new %S failed: %s\n%!" name msg;
       Error Kafka_error.Invalid_arg
 
-(* Reads delivery receipts from the pipe one struct at a time via
-   Eio.Flow.read_exact, which suspends on io_uring and resumes when the C
-   delivery callback writes one delivery_result_t. buf is reused safely
-   since parsing is synchronous with no yields between read and use.
+let drain_deliveries t =
+  let rec loop () =
+    match Kafka_raw.next_delivery t.handle with
+    | None -> ()
+    | Some (corr_id, err_code) ->
+      let result = if err_code = 0 then Ok () else err err_code in
+      Mutex.lock t.mutex;
+      Fun.protect
+        ~finally:(fun () -> Mutex.unlock t.mutex)
+        (fun () ->
+          match Hashtbl.find_opt t.pending corr_id with
+          | None -> ()
+          | Some resolver ->
+            Hashtbl.remove t.pending corr_id;
+            Eio.Promise.resolve resolver result);
+      loop ()
+  in
+  loop ()
 
-   The blocked read is interrupted by racing against delivery_stop rather
-   than a wake byte, since a fixed-size struct read can't distinguish a
-   wake byte from real framing. *)
+(* The C delivery callback queues receipts in native memory and writes a
+   one-byte wake to the pipe. The pipe can drop wake bytes under pressure
+   without losing receipts; this fiber drains the queue after every wake. *)
 let delivery_fiber t sw =
-  let sz  = Kafka_raw.delivery_sizeof () in
-  let buf = Cstruct.create sz in
+  let buf = Cstruct.create 4096 in
   Eio.Fiber.fork_daemon ~sw (fun () ->
     let rec loop () =
       if Atomic.get t.closed then ()
@@ -112,21 +129,11 @@ let delivery_fiber t sw =
         | `Stop -> ()
         | exception End_of_file -> ()
         | `Read () ->
-          let corr_id  = Cstruct.LE.get_uint64 buf 0 in
-          let err_code = Int32.to_int (Cstruct.LE.get_uint32 buf 8) in
-          let result   = if err_code = 0 then Ok () else err err_code in
-          Mutex.lock t.mutex;
-          Fun.protect
-            ~finally:(fun () -> Mutex.unlock t.mutex)
-            (fun () ->
-              match Hashtbl.find_opt t.pending corr_id with
-              | None -> ()
-              | Some resolver ->
-                Hashtbl.remove t.pending corr_id;
-                Eio.Promise.resolve resolver result);
+          drain_deliveries t;
           loop ()
     in
     (try loop () with Eio.Cancel.Cancelled _ -> ());
+    drain_deliveries t;
     Eio.Promise.resolve t.delivery_exit_r ();
     `Stop_daemon)
 
@@ -355,6 +362,10 @@ type txn_failure = {
   requires_abort : bool;
 }
 
+type consumer_handle = Kafka_consumer_handle.t
+
+let consumer_handle h = h
+
 type transaction_error =
   | App_error of Kafka_error.t
   | Txn_failure of txn_failure
@@ -399,8 +410,7 @@ let with_transaction t ?consumer_offsets f =
            match consumer_offsets with
            | None -> Ok ()
            | Some (ch, offsets) ->
-             Kafka_raw.send_offsets_to_transaction
-               t.handle (Kafka_consumer_handle.to_raw ch) offsets 5000
+             Kafka_raw.send_offsets_to_transaction t.handle (Kafka_consumer_handle.to_raw ch) offsets 5000
          in
          (match offsets_sent with
           | Error e -> abort_if_required t e; Error (Txn_failure (txn_failure_of_raw e))

@@ -337,6 +337,10 @@ module Consumer : sig
   val default_retry : retry_policy
   val default_queue_capacity : int
 
+  type 'e consume_error =
+    | Handler_error of 'e
+    | Invalid_config of string
+
   val consume_partitioned
     :  t
     -> sw:Eio.Switch.t
@@ -347,5 +351,5 @@ module Consumer : sig
     -> ?queue_capacity:int
     -> handler:(message -> ack:(unit -> (unit, Error.t) result) -> 'e handler_result)
     -> unit
-    -> (unit, 'e) result
+    -> (unit, 'e consume_error) result
 end

@@ -318,6 +318,10 @@ let default_retry = {
 
 let default_queue_capacity = 16
 
+type 'e consume_error =
+  | Handler_error of 'e
+  | Invalid_config of string
+
 (* Routes each message to a per-partition fiber so retry backoff on one
    partition never blocks another; the partition is paused at the librdkafka
    level during retry sleep. An inner Eio.Switch.run (not ~sw) owns the
@@ -334,6 +338,9 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
     ?(on_warning = default_on_warning)
     ?(queue_capacity = default_queue_capacity)
     ~handler () =
+  if queue_capacity <= 0 then
+    Stdlib.Error (Invalid_config "queue_capacity must be positive")
+  else
   let stop    = Atomic.make false in
   let stop_p, stop_r = Eio.Promise.create () in
   let first_err = ref None in
@@ -465,5 +472,5 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
     Hashtbl.iter (fun _ s -> Eio.Stream.add s None) streams
   );
   match !first_err with
-  | Some e -> Result.error e
-  | None   -> Result.ok ()
+  | Some e -> Stdlib.Error (Handler_error e)
+  | None   -> Stdlib.Ok ()

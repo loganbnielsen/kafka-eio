@@ -22,6 +22,10 @@
   the writable internal queue.
 - `Kafka.Consumer.consume` now stops normally when a directly closed consumer was
   blocked waiting for the next message.
+- **API change**: `Kafka.Consumer.consume_partitioned` now returns
+  `(unit, 'e consume_error) result`, preserving handler errors as
+  `Handler_error _` and reporting invalid consumer-loop configuration as
+  `Invalid_config _`.
 - Renamed a local `rc` binding in `produce_await` to `send_result` — the abbreviation
   read ambiguously next to Kafka's own return-code conventions. No public API change.
 - Comment-only pass over the C stubs and consumer/producer: multi-paragraph rationale

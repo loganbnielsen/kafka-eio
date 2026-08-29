@@ -10,7 +10,7 @@ let contains s sub =
     in
     go 0
 
-let full_sasl = Kafka_security.{
+let full_sasl = Kafka.Security.{
   mechanism = Plain;
   username  = "user";
   password  = "pass";
@@ -26,11 +26,11 @@ let test_protocol_of_string_valid () =
   in
   List.iter (fun (raw, expected) ->
     Alcotest.(check bool) raw true
-      (Kafka_security.protocol_of_string raw = Ok expected)
+      (Kafka.Security.protocol_of_string raw = Ok expected)
   ) cases
 
 let test_protocol_of_string_invalid () =
-  match Kafka_security.protocol_of_string "scram" with
+  match Kafka.Security.protocol_of_string "scram" with
   | Ok _ -> Alcotest.fail "expected invalid protocol error"
   | Error msg ->
     Alcotest.(check bool) "message names env var" true
@@ -46,7 +46,7 @@ let with_env name value f =
 
 let test_of_env_rejects_unknown_protocol () =
   with_env "KAFKA_SECURITY_PROTOCOL" "scram" (fun () ->
-    match Kafka_security.of_env () with
+    match Kafka.Security.of_env () with
     | Ok _ -> Alcotest.fail "expected of_env to reject unknown protocol"
     | Error msg ->
       Alcotest.(check bool) "clear protocol error" true
@@ -57,7 +57,7 @@ let test_of_env_rejects_missing_sasl_fields () =
     with_env "KAFKA_SASL_MECHANISM" "" (fun () ->
       with_env "KAFKA_SASL_USERNAME" "user" (fun () ->
         with_env "KAFKA_SASL_PASSWORD" "pass" (fun () ->
-          match Kafka_security.of_env () with
+          match Kafka.Security.of_env () with
           | Ok _ -> Alcotest.fail "expected missing SASL mechanism error"
           | Error msg ->
             Alcotest.(check bool) "message names missing env var" true
@@ -68,7 +68,7 @@ let test_of_env_rejects_unknown_sasl_mechanism () =
     with_env "KAFKA_SASL_MECHANISM" "GSSAPI" (fun () ->
       with_env "KAFKA_SASL_USERNAME" "user" (fun () ->
         with_env "KAFKA_SASL_PASSWORD" "pass" (fun () ->
-          match Kafka_security.of_env () with
+          match Kafka.Security.of_env () with
           | Ok _ -> Alcotest.fail "expected unknown SASL mechanism error"
           | Error msg ->
             Alcotest.(check bool) "message names bad mechanism" true
@@ -76,17 +76,17 @@ let test_of_env_rejects_unknown_sasl_mechanism () =
 
 let test_plaintext_ok () =
   Alcotest.(check bool) "plaintext → Ok" true
-    (Kafka_security.settings Kafka_security.default = [ ("security.protocol", "plaintext") ])
+    (Kafka.Security.settings Kafka.Security.default = [ ("security.protocol", "plaintext") ])
 
 let test_ssl_no_sasl_ok () =
-  let sec = Kafka_security.Ssl { ssl_ca_location = None } in
+  let sec = Kafka.Security.Ssl { ssl_ca_location = None } in
   Alcotest.(check bool) "ssl without sasl → Ok" true
-    (Kafka_security.settings sec = [ ("security.protocol", "ssl") ])
+    (Kafka.Security.settings sec = [ ("security.protocol", "ssl") ])
 
 let test_sasl_ssl_all_fields_ok () =
-  let sec = Kafka_security.Sasl_ssl { ssl_ca_location = None; sasl = full_sasl } in
+  let sec = Kafka.Security.Sasl_ssl { ssl_ca_location = None; sasl = full_sasl } in
   Alcotest.(check bool) "sasl_ssl all fields → Ok" true
-    (Kafka_security.settings sec
+    (Kafka.Security.settings sec
      = [ ("security.protocol", "sasl_ssl");
          ("sasl.mechanism", "PLAIN");
          ("sasl.username", "user");
@@ -94,9 +94,9 @@ let test_sasl_ssl_all_fields_ok () =
        ])
 
 let test_sasl_plaintext_all_fields_ok () =
-  let sec = Kafka_security.Sasl_plaintext full_sasl in
+  let sec = Kafka.Security.Sasl_plaintext full_sasl in
   Alcotest.(check bool) "sasl_plaintext all fields → Ok" true
-    (Kafka_security.settings sec
+    (Kafka.Security.settings sec
      = [ ("security.protocol", "sasl_plaintext");
          ("sasl.mechanism", "PLAIN");
          ("sasl.username", "user");

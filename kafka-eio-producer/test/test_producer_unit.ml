@@ -5,42 +5,42 @@
     result) has no test here: this librdkafka build doesn't validate topic
     name syntax locally, so there's no reliable local trigger for it. *)
 
-let unreachable_config : Kafka_producer.config =
+let unreachable_config : Kafka.Producer.config =
   { brokers       = ["127.0.0.1:1"]
-  ; delivery_mode = Kafka_producer.At_least_once
+  ; delivery_mode = Kafka.Producer.At_least_once
   ; linger_ms     = None
-  ; security      = Kafka_security.default
+  ; security      = Kafka.Security.default
   ; properties    = []
   }
 
 let test_produce_after_close_is_destroyed () =
   Eio_main.run @@ fun _env ->
     Eio.Switch.run @@ fun sw ->
-      match Kafka_producer.create unreachable_config ~sw with
-      | Error e -> Alcotest.failf "create failed: %s" (Kafka_error.to_string e)
+      match Kafka.Producer.create unreachable_config ~sw with
+      | Error e -> Alcotest.failf "create failed: %s" (Kafka.Error.to_string e)
       | Ok producer ->
-        Kafka_producer.close producer;
-        (match Kafka_producer.produce producer ~topic:"t" ~value:(Some (Bytes.of_string "x")) () with
-         | Error Kafka_error.Destroy -> ()
+        Kafka.Producer.close producer;
+        (match Kafka.Producer.produce producer ~topic:"t" ~value:(Some (Bytes.of_string "x")) () with
+         | Error Kafka.Error.Destroy -> ()
          | Ok () -> Alcotest.fail "expected produce after close to fail"
-         | Error e -> Alcotest.failf "expected Destroy, got %s" (Kafka_error.to_string e));
-        (match Kafka_producer.flush producer ~timeout_ms:0 with
-         | Error Kafka_error.Destroy -> ()
+         | Error e -> Alcotest.failf "expected Destroy, got %s" (Kafka.Error.to_string e));
+        (match Kafka.Producer.flush producer ~timeout_ms:0 with
+         | Error Kafka.Error.Destroy -> ()
          | Ok () -> Alcotest.fail "expected flush after close to fail"
-         | Error e -> Alcotest.failf "expected Destroy, got %s" (Kafka_error.to_string e))
+         | Error e -> Alcotest.failf "expected Destroy, got %s" (Kafka.Error.to_string e))
 
 let test_close_resolves_pending_produce_await () =
   Eio_main.run @@ fun env ->
     Eio.Switch.run @@ fun sw ->
-      match Kafka_producer.create unreachable_config ~sw with
-      | Error e -> Alcotest.failf "create failed: %s" (Kafka_error.to_string e)
+      match Kafka.Producer.create unreachable_config ~sw with
+      | Error e -> Alcotest.failf "create failed: %s" (Kafka.Error.to_string e)
       | Ok producer ->
         let promise =
-          Kafka_producer.produce_await producer ~topic:"t" ~value:(Some (Bytes.of_string "x")) ()
+          Kafka.Producer.produce_await producer ~topic:"t" ~value:(Some (Bytes.of_string "x")) ()
         in
         (* close flushes (up to 5s) against an unreachable broker, then must
            still resolve this promise rather than leave it pending forever. *)
-        Kafka_producer.close producer;
+        Kafka.Producer.close producer;
         (match Eio.Time.with_timeout env#clock 10.0
                  (fun () -> Ok (Eio.Promise.await promise)) with
          | Error `Timeout ->
@@ -60,9 +60,9 @@ let test_close_does_not_leak_pipe_fds () =
       let fd_count () = Array.length (Sys.readdir "/proc/self/fd") in
       let before = fd_count () in
       for _ = 1 to 5 do
-        match Kafka_producer.create unreachable_config ~sw with
-        | Error e -> Alcotest.failf "create failed: %s" (Kafka_error.to_string e)
-        | Ok producer -> Kafka_producer.close producer
+        match Kafka.Producer.create unreachable_config ~sw with
+        | Error e -> Alcotest.failf "create failed: %s" (Kafka.Error.to_string e)
+        | Ok producer -> Kafka.Producer.close producer
       done;
       let after = fd_count () in
       Alcotest.(check bool)

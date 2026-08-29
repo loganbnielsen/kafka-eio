@@ -6,23 +6,23 @@ let test_topic = "sun-consumer-test"
 
 let seed_messages sw n =
   let cfg = Kafka_test_helpers.default_producer_config () in
-  match Kafka_producer.create cfg ~sw with
-  | Error e -> Alcotest.failf "seed producer create failed: %s" (Kafka_error.to_string e)
+  match Kafka.Producer.create cfg ~sw with
+  | Error e -> Alcotest.failf "seed producer create failed: %s" (Kafka.Error.to_string e)
   | Ok producer ->
     let promises = List.init n (fun i ->
-      Kafka_producer.produce_await producer
+      Kafka.Producer.produce_await producer
         ~topic:test_topic
         ~key:(Bytes.of_string (string_of_int i))
         ~value:(Some (Bytes.of_string (Printf.sprintf "message-%04d" i))) ()
     ) in
     List.iter (fun p ->
       match Eio.Promise.await p with
-      | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka_error.to_string e)
+      | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka.Error.to_string e)
       | Ok () -> ()
     ) promises;
-    Kafka_producer.close producer
+    Kafka.Producer.close producer
 
-let make_consumer_config () : Kafka_consumer.config =
+let make_consumer_config () : Kafka.Consumer.config =
   Kafka_test_helpers.default_consumer_config
     ~group_id:(Printf.sprintf "sun-test-%d" (Unix.getpid ()))
     ~topics:[ test_topic ]
@@ -33,56 +33,56 @@ let test_poll_messages () =
     Eio.Switch.run @@ fun sw ->
       seed_messages sw 5;
 
-      match Kafka_consumer.create (make_consumer_config ()) ~sw with
+      match Kafka.Consumer.create (make_consumer_config ()) ~sw with
       | Error e ->
-        Alcotest.failf "consumer create failed: %s" (Kafka_error.to_string e)
+        Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
         let received = ref [] in
-        let stream = Kafka_consumer.stream consumer in
+        let stream = Kafka.Consumer.stream consumer in
         (match Eio.Time.with_timeout env#clock 10.0 (fun () ->
           while List.length !received < 5 do
             let msg = Eio.Stream.take stream in
             received := msg :: !received;
-            ignore (Kafka_consumer.commit consumer msg)
+            ignore (Kafka.Consumer.commit consumer msg)
           done;
           Ok ()
         ) with
         | Error `Timeout -> Alcotest.fail "timed out waiting for messages"
         | Ok () -> ());
         Alcotest.(check int) "received 5 messages" 5 (List.length !received);
-        Kafka_consumer.close consumer
+        Kafka.Consumer.close consumer
 
 let test_consume_with_ack () =
   Eio_main.run @@ fun _env ->
     Eio.Switch.run @@ fun sw ->
       seed_messages sw 3;
 
-      match Kafka_consumer.create (make_consumer_config ()) ~sw with
+      match Kafka.Consumer.create (make_consumer_config ()) ~sw with
       | Error e ->
-        Alcotest.failf "consumer create failed: %s" (Kafka_error.to_string e)
+        Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
         let count = ref 0 in
         let _ =
-          Kafka_consumer.consume consumer ~handler:(fun _msg ~ack ->
+          Kafka.Consumer.consume consumer ~handler:(fun _msg ~ack ->
             ignore (ack ());
             incr count;
-            if !count >= 3 then Kafka_consumer.Stop
-            else Kafka_consumer.Continue
+            if !count >= 3 then Kafka.Consumer.Stop
+            else Kafka.Consumer.Continue
           ) ()
         in
         Alcotest.(check int) "consumed 3 messages" 3 !count;
-        Kafka_consumer.close consumer
+        Kafka.Consumer.close consumer
 
 let test_stream_api () =
   Eio_main.run @@ fun env ->
     Eio.Switch.run @@ fun sw ->
       seed_messages sw 4;
 
-      match Kafka_consumer.create (make_consumer_config ()) ~sw with
+      match Kafka.Consumer.create (make_consumer_config ()) ~sw with
       | Error e ->
-        Alcotest.failf "consumer create failed: %s" (Kafka_error.to_string e)
+        Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
-        let stream = Kafka_consumer.stream consumer in
+        let stream = Kafka.Consumer.stream consumer in
         let msgs = ref [] in
         (match Eio.Time.with_timeout env#clock 10.0 (fun () ->
           for _ = 1 to 4 do
@@ -94,7 +94,7 @@ let test_stream_api () =
         | Error `Timeout -> Alcotest.fail "timed out waiting for stream messages"
         | Ok () -> ());
         Alcotest.(check int) "stream yielded 4 messages" 4 (List.length !msgs);
-        Kafka_consumer.close consumer
+        Kafka.Consumer.close consumer
 
 (* A NULL payload (tombstone) must stay distinct from a genuine
    zero-length value at the consumer FFI boundary. Uses its own
@@ -105,38 +105,38 @@ let test_tombstone () =
     Eio.Switch.run @@ fun sw ->
       let pid = Unix.getpid () in
       let topic = Printf.sprintf "kafka-eio-test-tombstone-%d" pid in
-      (match Kafka_producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
-       | Error e -> Alcotest.failf "seed producer create failed: %s" (Kafka_error.to_string e)
+      (match Kafka.Producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
+       | Error e -> Alcotest.failf "seed producer create failed: %s" (Kafka.Error.to_string e)
        | Ok producer ->
-         (match Kafka_producer.create_topic producer
+         (match Kafka.Producer.create_topic producer
                   ~topic_name:topic ~partitions:1 ~replication_factor:1 with
-          | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka_error.to_string e)
+          | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ());
          List.iter (fun value ->
-           match Eio.Promise.await (Kafka_producer.produce_await producer ~topic ~value ()) with
-           | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka_error.to_string e)
+           match Eio.Promise.await (Kafka.Producer.produce_await producer ~topic ~value ()) with
+           | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka.Error.to_string e)
            | Ok () -> ()
          ) [ Some (Bytes.of_string "before"); None; Some Bytes.empty; Some (Bytes.of_string "after") ];
-         Kafka_producer.close producer);
+         Kafka.Producer.close producer);
 
-      let cfg : Kafka_consumer.config = {
+      let cfg : Kafka.Consumer.config = {
         brokers      = Kafka_test_helpers.brokers ();
         group_id     = Printf.sprintf "kafka-eio-test-tombstone-group-%d" pid;
         topics       = [ topic ];
-        offset_reset = Kafka_consumer.Earliest;
+        offset_reset = Kafka.Consumer.Earliest;
         auto_commit  = false;
-        security     = Kafka_security.default;
+        security     = Kafka.Security.default;
         properties   = [];
       } in
-      match Kafka_consumer.create cfg ~sw with
-      | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka_error.to_string e)
+      match Kafka.Consumer.create cfg ~sw with
+      | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
         let values = ref [] in
         (match Eio.Time.with_timeout env#clock 10.0 (fun () ->
            while List.length !values < 4 do
-             match Kafka_consumer.fetch consumer with
+             match Kafka.Consumer.fetch consumer with
              | Ok msg -> values := msg.value :: !values
-             | Error e -> Alcotest.failf "fetch failed: %s" (Kafka_error.to_string e)
+             | Error e -> Alcotest.failf "fetch failed: %s" (Kafka.Error.to_string e)
            done;
            Ok ()
          ) with
@@ -147,7 +147,7 @@ let test_tombstone () =
           "tombstone (None) stays distinct from a real value, including a real empty one"
           [ Some "before"; None; Some ""; Some "after" ]
           values;
-        Kafka_consumer.close consumer
+        Kafka.Consumer.close consumer
 
 (* A producer-sent NULL-valued header must stay distinct from Some "",
    mirroring the consumer read side. *)
@@ -156,37 +156,37 @@ let test_header_with_null_value () =
     Eio.Switch.run @@ fun sw ->
       let pid = Unix.getpid () in
       let topic = Printf.sprintf "kafka-eio-test-headers-%d" pid in
-      (match Kafka_producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
-       | Error e -> Alcotest.failf "seed producer create failed: %s" (Kafka_error.to_string e)
+      (match Kafka.Producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
+       | Error e -> Alcotest.failf "seed producer create failed: %s" (Kafka.Error.to_string e)
        | Ok producer ->
-         (match Kafka_producer.create_topic producer
+         (match Kafka.Producer.create_topic producer
                   ~topic_name:topic ~partitions:1 ~replication_factor:1 with
-          | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka_error.to_string e)
+          | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ());
-         (match Eio.Promise.await (Kafka_producer.produce_await producer
+         (match Eio.Promise.await (Kafka.Producer.produce_await producer
                   ~topic ~value:(Some (Bytes.of_string "with-headers"))
                   ~headers:[ ("present", Some "v1"); ("absent", None) ] ()) with
-          | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka_error.to_string e)
+          | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ());
-         Kafka_producer.close producer);
+         Kafka.Producer.close producer);
 
-      let cfg : Kafka_consumer.config = {
+      let cfg : Kafka.Consumer.config = {
         brokers      = Kafka_test_helpers.brokers ();
         group_id     = Printf.sprintf "kafka-eio-test-headers-group-%d" pid;
         topics       = [ topic ];
-        offset_reset = Kafka_consumer.Earliest;
+        offset_reset = Kafka.Consumer.Earliest;
         auto_commit  = false;
-        security     = Kafka_security.default;
+        security     = Kafka.Security.default;
         properties   = [];
       } in
-      match Kafka_consumer.create cfg ~sw with
-      | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka_error.to_string e)
+      match Kafka.Consumer.create cfg ~sw with
+      | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
         let msg = ref None in
         (match Eio.Time.with_timeout env#clock 10.0 (fun () ->
-           match Kafka_consumer.fetch consumer with
+           match Kafka.Consumer.fetch consumer with
            | Ok m -> msg := Some m; Ok ()
-           | Error e -> Error (`Fetch_failed (Kafka_error.to_string e))
+           | Error e -> Error (`Fetch_failed (Kafka.Error.to_string e))
          ) with
          | Error `Timeout -> Alcotest.fail "timed out waiting for message"
          | Error (`Fetch_failed m) -> Alcotest.failf "fetch failed: %s" m
@@ -196,7 +196,7 @@ let test_header_with_null_value () =
           "NULL-valued header stays distinct from Some \"\""
           [ ("present", Some "v1"); ("absent", None) ]
           msg.headers;
-        Kafka_consumer.close consumer
+        Kafka.Consumer.close consumer
 
 (* A non-NULL msg->key with key_len 0 is a genuine zero-length key,
    distinct from NULL ("no key") — must stay that way through the
@@ -206,41 +206,41 @@ let test_zero_length_key_distinct_from_no_key () =
     Eio.Switch.run @@ fun sw ->
       let pid = Unix.getpid () in
       let topic = Printf.sprintf "kafka-eio-test-keys-%d" pid in
-      (match Kafka_producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
-       | Error e -> Alcotest.failf "seed producer create failed: %s" (Kafka_error.to_string e)
+      (match Kafka.Producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
+       | Error e -> Alcotest.failf "seed producer create failed: %s" (Kafka.Error.to_string e)
        | Ok producer ->
-         (match Kafka_producer.create_topic producer
+         (match Kafka.Producer.create_topic producer
                   ~topic_name:topic ~partitions:1 ~replication_factor:1 with
-          | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka_error.to_string e)
+          | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ());
          let send ?key value =
-           match Eio.Promise.await (Kafka_producer.produce_await producer ~topic ~value ?key ()) with
-           | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka_error.to_string e)
+           match Eio.Promise.await (Kafka.Producer.produce_await producer ~topic ~value ?key ()) with
+           | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka.Error.to_string e)
            | Ok () -> ()
          in
          send ~key:Bytes.empty (Some (Bytes.of_string "zero-length-key"));
          send (Some (Bytes.of_string "no-key"));
          send ~key:(Bytes.of_string "k") (Some (Bytes.of_string "real-key"));
-         Kafka_producer.close producer);
+         Kafka.Producer.close producer);
 
-      let cfg : Kafka_consumer.config = {
+      let cfg : Kafka.Consumer.config = {
         brokers      = Kafka_test_helpers.brokers ();
         group_id     = Printf.sprintf "kafka-eio-test-keys-group-%d" pid;
         topics       = [ topic ];
-        offset_reset = Kafka_consumer.Earliest;
+        offset_reset = Kafka.Consumer.Earliest;
         auto_commit  = false;
-        security     = Kafka_security.default;
+        security     = Kafka.Security.default;
         properties   = [];
       } in
-      match Kafka_consumer.create cfg ~sw with
-      | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka_error.to_string e)
+      match Kafka.Consumer.create cfg ~sw with
+      | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
         let keys = ref [] in
         (match Eio.Time.with_timeout env#clock 10.0 (fun () ->
            while List.length !keys < 3 do
-             match Kafka_consumer.fetch consumer with
+             match Kafka.Consumer.fetch consumer with
              | Ok msg -> keys := msg.key :: !keys
-             | Error e -> Alcotest.failf "fetch failed: %s" (Kafka_error.to_string e)
+             | Error e -> Alcotest.failf "fetch failed: %s" (Kafka.Error.to_string e)
            done;
            Ok ()
          ) with
@@ -251,7 +251,7 @@ let test_zero_length_key_distinct_from_no_key () =
           "zero-length key stays distinct from no key"
           [ Some ""; None; Some "k" ]
           keys;
-        Kafka_consumer.close consumer
+        Kafka.Consumer.close consumer
 
 (* A partition fiber that exits without draining its own queue — on
    Stop, exhausted retries, or being interrupted mid-retry-sleep by
@@ -269,52 +269,52 @@ let test_consume_partitioned_stop_does_not_hang () =
     Eio.Switch.run @@ fun sw ->
       let pid = Unix.getpid () in
       let topic = Printf.sprintf "kafka-eio-test-partitioned-stop-%d" pid in
-      (match Kafka_producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
-       | Error e -> Alcotest.failf "seed producer create failed: %s" (Kafka_error.to_string e)
+      (match Kafka.Producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
+       | Error e -> Alcotest.failf "seed producer create failed: %s" (Kafka.Error.to_string e)
        | Ok producer ->
-         (match Kafka_producer.create_topic producer
+         (match Kafka.Producer.create_topic producer
                   ~topic_name:topic ~partitions:2 ~replication_factor:1 with
-          | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka_error.to_string e)
+          | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ());
          for i = 0 to 9 do
-           match Eio.Promise.await (Kafka_producer.produce_await producer
+           match Eio.Promise.await (Kafka.Producer.produce_await producer
                    ~topic ~key:(Bytes.of_string (string_of_int i))
                    ~value:(Some (Bytes.of_string (string_of_int i))) ()) with
-           | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka_error.to_string e)
+           | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka.Error.to_string e)
            | Ok () -> ()
          done;
-         Kafka_producer.close producer);
+         Kafka.Producer.close producer);
 
-      let cfg : Kafka_consumer.config = {
+      let cfg : Kafka.Consumer.config = {
         brokers      = Kafka_test_helpers.brokers ();
         group_id     = Printf.sprintf "kafka-eio-test-partitioned-stop-group-%d" pid;
         topics       = [ topic ];
-        offset_reset = Kafka_consumer.Earliest;
+        offset_reset = Kafka.Consumer.Earliest;
         auto_commit  = false;
-        security     = Kafka_security.default;
+        security     = Kafka.Security.default;
         properties   = [];
       } in
-      match Kafka_consumer.create cfg ~sw with
-      | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka_error.to_string e)
+      match Kafka.Consumer.create cfg ~sw with
+      | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
         let stuck_partition = ref None in
-        let handler (msg : Kafka_consumer.message) ~ack =
+        let handler (msg : Kafka.Consumer.message) ~ack =
           match !stuck_partition with
           | None ->
             stuck_partition := Some msg.partition;
-            Kafka_consumer.Error "stuck"
+            Kafka.Consumer.Error "stuck"
           | Some p when Int32.equal p msg.partition ->
-            Kafka_consumer.Error "stuck"
+            Kafka.Consumer.Error "stuck"
           | Some _ ->
             ignore (ack ());
-            Kafka_consumer.Stop
+            Kafka.Consumer.Stop
         in
-        let retry : Kafka_consumer.retry_policy =
+        let retry : Kafka.Consumer.retry_policy =
           { base_delay_s = 1.0; max_delay_s = 1.0; max_attempts = 3 }
         in
         let result =
           Eio.Time.with_timeout env#clock 20.0 (fun () ->
-            Ok (Kafka_consumer.consume_partitioned consumer ~sw ~clock:env#clock
+            Ok (Kafka.Consumer.consume_partitioned consumer ~sw ~clock:env#clock
                   ~retry ~queue_capacity:3 ~handler ()))
         in
         (* Either termination is a legitimate, non-hanging outcome here:
@@ -328,7 +328,7 @@ let test_consume_partitioned_stop_does_not_hang () =
          | Ok (Ok ()) -> ()
          | Ok (Error "stuck") -> ()
          | Ok (Error e) -> Alcotest.failf "unexpected handler error surfaced: %s" e);
-        Kafka_consumer.close consumer
+        Kafka.Consumer.close consumer
 
 (* librdkafka's default auto.offset.store advances the "stored" position
    on every message poll_fiber prefetches, whether processed or not —
@@ -342,56 +342,56 @@ let test_commit_all_does_not_commit_past_processed () =
       let pid = Unix.getpid () in
       let topic = Printf.sprintf "kafka-eio-test-commit-all-%d" pid in
       let group_id = Printf.sprintf "kafka-eio-test-commit-all-group-%d" pid in
-      (match Kafka_producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
-       | Error e -> Alcotest.failf "seed producer create failed: %s" (Kafka_error.to_string e)
+      (match Kafka.Producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
+       | Error e -> Alcotest.failf "seed producer create failed: %s" (Kafka.Error.to_string e)
        | Ok producer ->
-         (match Kafka_producer.create_topic producer
+         (match Kafka.Producer.create_topic producer
                   ~topic_name:topic ~partitions:1 ~replication_factor:1 with
-          | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka_error.to_string e)
+          | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ());
          for i = 0 to 4 do
-           match Eio.Promise.await (Kafka_producer.produce_await producer
+           match Eio.Promise.await (Kafka.Producer.produce_await producer
                    ~topic ~value:(Some (Bytes.of_string (string_of_int i))) ()) with
-           | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka_error.to_string e)
+           | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka.Error.to_string e)
            | Ok () -> ()
          done;
-         Kafka_producer.close producer);
+         Kafka.Producer.close producer);
 
-      let cfg : Kafka_consumer.config = {
+      let cfg : Kafka.Consumer.config = {
         brokers      = Kafka_test_helpers.brokers ();
         group_id;
         topics       = [ topic ];
-        offset_reset = Kafka_consumer.Earliest;
+        offset_reset = Kafka.Consumer.Earliest;
         auto_commit  = false;
-        security     = Kafka_security.default;
+        security     = Kafka.Security.default;
         properties   = [];
       } in
-      (match Kafka_consumer.create cfg ~sw with
-       | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka_error.to_string e)
+      (match Kafka.Consumer.create cfg ~sw with
+       | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
        | Ok consumer ->
          (* Let poll_fiber prefetch the whole backlog before processing
             just one message — the precondition for the stored position
             to drift ahead of what was processed. *)
          Eio.Time.sleep env#clock 1.0;
-         (match Kafka_consumer.fetch consumer with
-          | Error e -> Alcotest.failf "fetch failed: %s" (Kafka_error.to_string e)
+         (match Kafka.Consumer.fetch consumer with
+          | Error e -> Alcotest.failf "fetch failed: %s" (Kafka.Error.to_string e)
           | Ok msg ->
-            (match Kafka_consumer.commit consumer msg with
-             | Error e -> Alcotest.failf "commit failed: %s" (Kafka_error.to_string e)
+            (match Kafka.Consumer.commit consumer msg with
+             | Error e -> Alcotest.failf "commit failed: %s" (Kafka.Error.to_string e)
              | Ok () -> ()));
-         (match Kafka_consumer.commit_all consumer with
-          | Error e -> Alcotest.failf "commit_all failed: %s" (Kafka_error.to_string e)
+         (match Kafka.Consumer.commit_all consumer with
+          | Error e -> Alcotest.failf "commit_all failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ());
-         Kafka_consumer.close consumer);
+         Kafka.Consumer.close consumer);
 
-      match Kafka_consumer.create cfg ~sw with
-      | Error e -> Alcotest.failf "second consumer create failed: %s" (Kafka_error.to_string e)
+      match Kafka.Consumer.create cfg ~sw with
+      | Error e -> Alcotest.failf "second consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer2 ->
         let next = ref None in
         (match Eio.Time.with_timeout env#clock 10.0 (fun () ->
-           match Kafka_consumer.fetch consumer2 with
+           match Kafka.Consumer.fetch consumer2 with
            | Ok msg -> next := Some msg; Ok ()
-           | Error e -> Error (`Fetch_failed (Kafka_error.to_string e))
+           | Error e -> Error (`Fetch_failed (Kafka.Error.to_string e))
          ) with
          | Error `Timeout ->
            Alcotest.fail "no message left after commit_all — it committed past \
@@ -401,7 +401,7 @@ let test_commit_all_does_not_commit_past_processed () =
         let next = Option.get !next in
         Alcotest.(check (option string)) "commit_all did not commit past what was processed"
           (Some "1") (Option.map Bytes.to_string next.value);
-        Kafka_consumer.close consumer2
+        Kafka.Consumer.close consumer2
 
 (* Closing the consumer directly (instead of cancelling ~sw) never
    resolves consume_partitioned's internal stop_p, so routing_loop's
@@ -413,40 +413,40 @@ let test_consume_partitioned_stops_on_direct_close () =
     Eio.Switch.run @@ fun sw ->
       let pid = Unix.getpid () in
       let topic = Printf.sprintf "kafka-eio-test-partitioned-close-%d" pid in
-      (match Kafka_producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
-       | Error e -> Alcotest.failf "seed producer create failed: %s" (Kafka_error.to_string e)
+      (match Kafka.Producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
+       | Error e -> Alcotest.failf "seed producer create failed: %s" (Kafka.Error.to_string e)
        | Ok producer ->
-         (match Kafka_producer.create_topic producer
+         (match Kafka.Producer.create_topic producer
                   ~topic_name:topic ~partitions:1 ~replication_factor:1 with
-          | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka_error.to_string e)
+          | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ());
-         (match Eio.Promise.await (Kafka_producer.produce_await producer
+         (match Eio.Promise.await (Kafka.Producer.produce_await producer
                   ~topic ~value:(Some (Bytes.of_string "x")) ()) with
-          | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka_error.to_string e)
+          | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ());
-         Kafka_producer.close producer);
+         Kafka.Producer.close producer);
 
-      let cfg : Kafka_consumer.config = {
+      let cfg : Kafka.Consumer.config = {
         brokers      = Kafka_test_helpers.brokers ();
         group_id     = Printf.sprintf "kafka-eio-test-partitioned-close-group-%d" pid;
         topics       = [ topic ];
-        offset_reset = Kafka_consumer.Earliest;
+        offset_reset = Kafka.Consumer.Earliest;
         auto_commit  = false;
-        security     = Kafka_security.default;
+        security     = Kafka.Security.default;
         properties   = [];
       } in
-      match Kafka_consumer.create cfg ~sw with
-      | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka_error.to_string e)
+      match Kafka.Consumer.create cfg ~sw with
+      | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
-        let handler _msg ~ack = ignore (ack ()); Kafka_consumer.Continue in
+        let handler _msg ~ack = ignore (ack ()); Kafka.Consumer.Continue in
         let result =
           Eio.Time.with_timeout env#clock 10.0 (fun () ->
             Ok (Eio.Fiber.first
               (fun () ->
-                 Kafka_consumer.consume_partitioned consumer ~sw ~clock:env#clock ~handler ())
+                 Kafka.Consumer.consume_partitioned consumer ~sw ~clock:env#clock ~handler ())
               (fun () ->
                  Eio.Time.sleep env#clock 1.0;
-                 Kafka_consumer.close consumer;
+                 Kafka.Consumer.close consumer;
                  Eio.Time.sleep env#clock 30.0;
                  Ok ())))
         in
@@ -475,30 +475,30 @@ let test_commit_all_survives_rebalance () =
       let group_id = Printf.sprintf "kafka-eio-test-rebalance-group-%d" pid in
       let produce_range producer lo hi =
         for i = lo to hi do
-          match Eio.Promise.await (Kafka_producer.produce_await producer
+          match Eio.Promise.await (Kafka.Producer.produce_await producer
                   ~topic ~key:(Bytes.of_string (string_of_int i))
                   ~value:(Some (Bytes.of_string (Printf.sprintf "seed-%d" i))) ()) with
-          | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka_error.to_string e)
+          | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ()
         done
       in
-      (match Kafka_producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
-       | Error e -> Alcotest.failf "seed producer create failed: %s" (Kafka_error.to_string e)
+      (match Kafka.Producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
+       | Error e -> Alcotest.failf "seed producer create failed: %s" (Kafka.Error.to_string e)
        | Ok producer ->
-         (match Kafka_producer.create_topic producer
+         (match Kafka.Producer.create_topic producer
                   ~topic_name:topic ~partitions:2 ~replication_factor:1 with
-          | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka_error.to_string e)
+          | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ());
          produce_range producer 0 9;
-         Kafka_producer.close producer);
+         Kafka.Producer.close producer);
 
-      let cfg : Kafka_consumer.config = {
+      let cfg : Kafka.Consumer.config = {
         brokers      = Kafka_test_helpers.brokers ();
         group_id;
         topics       = [ topic ];
-        offset_reset = Kafka_consumer.Earliest;
+        offset_reset = Kafka.Consumer.Earliest;
         auto_commit  = false;
-        security     = Kafka_security.default;
+        security     = Kafka.Security.default;
         properties   = [];
       } in
       let drain_and_ack c ~budget_s =
@@ -507,8 +507,8 @@ let test_commit_all_survives_rebalance () =
         let rec loop () =
           if Unix.gettimeofday () > deadline then ()
           else
-            match Kafka_consumer.poll c with
-            | Error e -> Alcotest.failf "poll failed: %s" (Kafka_error.to_string e)
+            match Kafka.Consumer.poll c with
+            | Error e -> Alcotest.failf "poll failed: %s" (Kafka.Error.to_string e)
             | Ok None ->
               let now = Unix.gettimeofday () in
               (match !quiet_deadline with
@@ -517,15 +517,15 @@ let test_commit_all_survives_rebalance () =
                | Some _ -> Eio.Time.sleep env#clock 0.1; loop ())
             | Ok (Some msg) ->
               quiet_deadline := Some (Unix.gettimeofday () +. 0.5);
-              (match Kafka_consumer.commit c msg with
-               | Error e -> Alcotest.failf "commit failed: %s" (Kafka_error.to_string e)
+              (match Kafka.Consumer.commit c msg with
+               | Error e -> Alcotest.failf "commit failed: %s" (Kafka.Error.to_string e)
                | Ok () -> ());
               loop ()
         in
         loop ()
       in
-      match Kafka_consumer.create cfg ~sw with
-      | Error e -> Alcotest.failf "c1 create failed: %s" (Kafka_error.to_string e)
+      match Kafka.Consumer.create cfg ~sw with
+      | Error e -> Alcotest.failf "c1 create failed: %s" (Kafka.Error.to_string e)
       | Ok c1 ->
         drain_and_ack c1 ~budget_s:5.0;
 
@@ -533,36 +533,36 @@ let test_commit_all_survives_rebalance () =
            partitions between c1 and c2. *)
         Eio.Switch.run (fun sw2 ->
           let c2_ready, c2_ready_r = Eio.Promise.create () in
-          match Kafka_consumer.create cfg ~sw:sw2 ~on_ready:(fun () ->
+          match Kafka.Consumer.create cfg ~sw:sw2 ~on_ready:(fun () ->
                   Eio.Promise.resolve c2_ready_r ()) with
-          | Error e -> Alcotest.failf "c2 create failed: %s" (Kafka_error.to_string e)
+          | Error e -> Alcotest.failf "c2 create failed: %s" (Kafka.Error.to_string e)
           | Ok c2 ->
             (match Eio.Time.with_timeout env#clock 10.0 (fun () ->
                Eio.Promise.await c2_ready; Ok ()) with
              | Ok () -> ()
              | Error `Timeout -> Alcotest.fail "timed out waiting for c2 assignment");
-            (match Kafka_producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
-             | Error e -> Alcotest.failf "second seed producer create failed: %s" (Kafka_error.to_string e)
-             | Ok producer2 -> produce_range producer2 10 29; Kafka_producer.close producer2);
+            (match Kafka.Producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
+             | Error e -> Alcotest.failf "second seed producer create failed: %s" (Kafka.Error.to_string e)
+             | Ok producer2 -> produce_range producer2 10 29; Kafka.Producer.close producer2);
             drain_and_ack c1 ~budget_s:5.0;
             drain_and_ack c2 ~budget_s:5.0
           (* c2's switch ends here — closing it triggers another
              rebalance, handing its partition(s) back to c1. *));
 
         Eio.Time.sleep env#clock 3.0; (* let that rebalance settle too *)
-        (match Kafka_consumer.commit_all c1 with
-         | Error e -> Alcotest.failf "c1 commit_all failed: %s" (Kafka_error.to_string e)
+        (match Kafka.Consumer.commit_all c1 with
+         | Error e -> Alcotest.failf "c1 commit_all failed: %s" (Kafka.Error.to_string e)
          | Ok () -> ());
-        Kafka_consumer.close c1;
+        Kafka.Consumer.close c1;
 
-      match Kafka_consumer.create cfg ~sw with
-      | Error e -> Alcotest.failf "c3 create failed: %s" (Kafka_error.to_string e)
+      match Kafka.Consumer.create cfg ~sw with
+      | Error e -> Alcotest.failf "c3 create failed: %s" (Kafka.Error.to_string e)
       | Ok c3 ->
         let unexpected = ref None in
         (match Eio.Time.with_timeout env#clock 2.0 (fun () ->
-           match Kafka_consumer.fetch c3 with
+           match Kafka.Consumer.fetch c3 with
            | Ok msg -> unexpected := Some msg; Ok ()
-           | Error e -> Error (`Fetch_failed (Kafka_error.to_string e))
+           | Error e -> Error (`Fetch_failed (Kafka.Error.to_string e))
          ) with
          | Error `Timeout -> () (* expected: nothing left to redeliver *)
          | Error (`Fetch_failed m) -> Alcotest.failf "fetch failed: %s" m
@@ -572,7 +572,7 @@ let test_commit_all_survives_rebalance () =
              "commit_all rolled back the group's committed offset — \
               re-received topic=%s partition=%ld offset=%Ld"
              msg.topic msg.partition msg.offset);
-        Kafka_consumer.close c3
+        Kafka.Consumer.close c3
 
 let () =
   let open Alcotest in

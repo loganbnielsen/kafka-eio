@@ -3,14 +3,14 @@
 ## Unreleased
 
 - Public modules now ship as one `kafka-eio` library. The raw librdkafka FFI
-  module is private; supported caller-facing modules are `Kafka_producer`,
-  `Kafka_consumer`, `Kafka_error`, `Kafka_security`, and `Kafka`.
-- `Kafka_security` exposes librdkafka key/value `settings` instead of an
+  module is private; supported caller-facing modules are `Kafka.Producer`,
+  `Kafka.Consumer`, `Kafka.Error`, `Kafka.Security`, and `Kafka`.
+- `Kafka.Security` exposes librdkafka key/value `settings` instead of an
   `apply` function over raw Kafka config values.
-- Transactional consumer offsets now use `Kafka_producer.consumer_handle`, an
-  opaque token returned by `Kafka_consumer.handle`, without exposing raw
+- Transactional consumer offsets now use `Kafka.Producer.consumer_handle`, an
+  opaque token returned by `Kafka.Consumer.handle`, without exposing raw
   librdkafka handles.
-- `Kafka_producer.produce_await` delivery receipts are no longer lossy under
+- `Kafka.Producer.produce_await` delivery receipts are no longer lossy under
   pipe backpressure. The C delivery callback now queues receipts in native
   memory and uses the pipe only as a wakeup, so a full pipe cannot strand an
   awaiting promise until shutdown.
@@ -28,10 +28,10 @@
 
 ## 0.1.0
 
-- Initial standalone OPAM package: `Kafka_producer` and `Kafka_consumer` on top of
+- Initial standalone OPAM package: `Kafka.Producer` and `Kafka.Consumer` on top of
   librdkafka, extracted from the Sun platform after real in-tree usage. Idempotent/
   transactional delivery, consumer-group streaming with explicit ack, partition-aware
-  concurrency, and typed transport security (`Kafka_security.t`: plaintext/SSL/SASL) on
+  concurrency, and typed transport security (`Kafka.Security.t`: plaintext/SSL/SASL) on
   every producer, consumer, and service config.
 - Delivery receipts flow through a Unix pipe from the C delivery callback (thread-safe,
   no OCaml runtime needed from C); a background Eio fiber reads the pipe and resolves
@@ -44,9 +44,9 @@
 
 ### Post-tag fix (#1): mutex-unlock skipped under Eio cancellation
 
-Every `Mutex.lock t.mutex; ...; Mutex.unlock t.mutex` pair in `Kafka_producer` (delivery
+Every `Mutex.lock t.mutex; ...; Mutex.unlock t.mutex` pair in `Kafka.Producer` (delivery
 callback dispatch, pending-promise bookkeeping in `produce_await`, and cleanup in
-`close`) and the `poll_exit_r` resolution in `Kafka_consumer`'s `poll_fiber` skipped the
+`close`) and the `poll_exit_r` resolution in `Kafka.Consumer`'s `poll_fiber` skipped the
 unlock/resolve step if an `Eio.Cancel.Cancelled` (or any other exception) was raised
 between the lock and unlock — leaving the mutex held forever, or a fiber awaiting
 `poll_exit_r` hanging forever after `close`. Fixed by wrapping every such critical

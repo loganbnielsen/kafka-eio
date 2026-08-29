@@ -72,7 +72,8 @@ let test_produce_many () =
              match Eio.Promise.await p with
              | Error e -> Alcotest.failf "batch produce_await failed: %s" (Kafka.Error.to_string e)
              | Ok ()   -> ()
-           ) promises) with
+           ) promises;
+           Ok ()) with
          | Ok () -> ()
          | Error `Timeout -> Alcotest.fail "timed out awaiting produce_await burst");
         Kafka.Producer.close producer

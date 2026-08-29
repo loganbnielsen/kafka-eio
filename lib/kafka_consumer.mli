@@ -67,9 +67,9 @@ val create
   -> sw:Eio.Switch.t
   -> (t, Kafka_error.t) result
 
-(** Every operation below returns [Error Kafka_error.Destroy] once [close]
-    has been called, instead of touching the underlying (possibly destroyed)
-    handle. *)
+(** [close t] releases the consumer. Single-message operations below return
+    [Error Kafka_error.Destroy] once [close] has been called. Driving loops
+    such as [consume] and [consume_partitioned] stop normally. *)
 val close : t -> unit
 
 (** Opaque handle for {!Kafka_producer.with_transaction}'s
@@ -94,8 +94,8 @@ val fetch : t -> (message, Kafka_error.t) result
     call that can itself fail. [on_warning] receives a human-readable message
     for API-misuse/operational events (e.g. a handler returning without
     calling [ack ()]); defaults to writing to stderr prefixed [kafka-eio: ].
-    Returns [Ok ()] when [handler] returns [Stop], [Error e] when [handler]
-    returns [Error e]. *)
+    Returns [Ok ()] when [handler] returns [Stop] or [t] is closed,
+    [Error e] when [handler] returns [Error e]. *)
 val consume
   :  t
   -> ?on_warning:(string -> unit)

@@ -313,12 +313,14 @@ module Consumer : sig
 
   val close : t -> unit
   val handle : t -> Producer.consumer_handle
-  val stream : t -> message Eio.Stream.t
   val fetch : t -> (message, Error.t) result
   val poll : t -> (message option, Error.t) result
   val commit : t -> message -> (unit, Error.t) result
   val commit_all : t -> (unit, Error.t) result
 
+  (** Process messages until the handler returns [Stop], the consumer is
+      closed, or the handler returns [Error _]. Closing the consumer stops the
+      loop as [Ok ()]; handler errors are returned unchanged. *)
   val consume
     :  t
     -> ?on_warning:(string -> unit)

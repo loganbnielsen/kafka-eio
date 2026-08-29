@@ -3,7 +3,7 @@
 Eio-native Kafka client for OCaml 5, built on librdkafka.
 
 - `Kafka.Producer` — fire-and-forget, awaitable delivery, transactions
-- `Kafka.Consumer` — fetch/stream/poll, consumer groups, explicit ack, partition-aware retry
+- `Kafka.Consumer` — fetch/poll, consumer groups, explicit ack, partition-aware retry
 - `Kafka.Error` and `Kafka.Security` — shared error and transport-security contracts
 - `Kafka` — thin aliases (`Kafka.Producer`, `Kafka.Consumer`, `Kafka.Error`,
   `Kafka.Security`) for callers that prefer one namespace

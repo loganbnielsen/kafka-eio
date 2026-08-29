@@ -36,6 +36,8 @@ type t = {
   config      : config;
   stream      : message Eio.Stream.t;
   closed      : bool Atomic.t;
+  closed_p    : unit Eio.Promise.t;
+  closed_r    : unit Eio.Promise.u;
   (* Eio_unix.pipe ties fd lifetime to the switch; close releases these early. *)
   wake_source : Eio_unix.source_ty Eio.Std.r;
   wake_sink   : Eio_unix.sink_ty Eio.Std.r;
@@ -145,6 +147,7 @@ let close t =
     (* Drain before awaiting poll_exited: the poll fiber may be blocked adding
        to a full stream and needs room to reach its closed check. *)
     Eio.Cancel.protect (fun () ->
+      Eio.Promise.resolve t.closed_r ();
       Kafka_raw.consumer_queue_events_disable t.handle;
       (* Wake the daemon once librdkafka no longer owns this fd. *)
       let wfd = Atomic.get t.wake_fd in
@@ -186,12 +189,15 @@ let create ?(on_ready = ignore) ?(on_poll_error = default_on_poll_error) (cfg : 
        Result.error (Kafka_error.Config_error msg)
      | Ok () ->
        let (poll_exited, poll_exit_r) = Eio.Promise.create () in
+       let (closed_p, closed_r) = Eio.Promise.create () in
        let (wake_source, wake_sink) = Eio_unix.pipe sw in
        let t = {
          handle      = rk_handle;
          config      = cfg;
          stream      = Eio.Stream.create 256;
          closed      = Atomic.make false;
+         closed_p;
+         closed_r;
          wake_source;
          wake_sink;
          wake_fd     = Atomic.make (-1);
@@ -227,27 +233,36 @@ let fetch t =
   else Result.ok (Eio.Stream.take t.stream)
 
 let consume t ?(on_warning = default_on_warning) ~handler () =
+  let take_or_closed () =
+    if is_closed t then None
+    else
+      Eio.Fiber.first
+        (fun () -> Some (Eio.Stream.take t.stream))
+        (fun () -> Eio.Promise.await t.closed_p; None)
+  in
   let rec loop () =
-    let msg = Eio.Stream.take t.stream in
-    let acked = ref false in
-    let ack () =
-      acked := true;
-      if is_closed t then Result.error Kafka_error.Destroy
-      else commit_tracked t ~topic:msg.topic ~partition:msg.partition ~offset:msg.offset
-    in
-    let result = handler msg ~ack in
-    (match result with
-     | (Continue | Stop) when not !acked ->
-       on_warning
-         (Printf.sprintf
-            "handler returned without calling ack() — offset not committed \
-             (topic=%s partition=%ld offset=%Ld)"
-            msg.topic msg.partition msg.offset)
-     | _ -> ());
-    match result with
-    | Continue -> loop ()
-    | Stop     -> Result.ok ()
-    | Error e  -> Result.error e
+    match take_or_closed () with
+    | None -> Result.ok ()
+    | Some msg ->
+      let acked = ref false in
+      let ack () =
+        acked := true;
+        if is_closed t then Result.error Kafka_error.Destroy
+        else commit_tracked t ~topic:msg.topic ~partition:msg.partition ~offset:msg.offset
+      in
+      let result = handler msg ~ack in
+      (match result with
+       | (Continue | Stop) when not !acked ->
+         on_warning
+           (Printf.sprintf
+              "handler returned without calling ack() — offset not committed \
+               (topic=%s partition=%ld offset=%Ld)"
+              msg.topic msg.partition msg.offset)
+       | _ -> ());
+      match result with
+      | Continue -> loop ()
+      | Stop     -> Result.ok ()
+      | Error e  -> Result.error e
   in
   loop ()
 

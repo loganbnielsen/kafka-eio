@@ -10,7 +10,7 @@ let contains s sub =
     in
     go 0
 
-let full_sasl = Kafka_security.{
+let full_sasl = Kafka.Security.{
   mechanism = Plain;
   username  = "user";
   password  = "pass";
@@ -26,11 +26,11 @@ let test_protocol_of_string_valid () =
   in
   List.iter (fun (raw, expected) ->
     Alcotest.(check bool) raw true
-      (Kafka_security.protocol_of_string raw = Ok expected)
+      (Kafka.Security.protocol_of_string raw = Ok expected)
   ) cases
 
 let test_protocol_of_string_invalid () =
-  match Kafka_security.protocol_of_string "scram" with
+  match Kafka.Security.protocol_of_string "scram" with
   | Ok _ -> Alcotest.fail "expected invalid protocol error"
   | Error msg ->
     Alcotest.(check bool) "message names env var" true
@@ -46,7 +46,7 @@ let with_env name value f =
 
 let test_of_env_rejects_unknown_protocol () =
   with_env "KAFKA_SECURITY_PROTOCOL" "scram" (fun () ->
-    match Kafka_security.of_env () with
+    match Kafka.Security.of_env () with
     | Ok _ -> Alcotest.fail "expected of_env to reject unknown protocol"
     | Error msg ->
       Alcotest.(check bool) "clear protocol error" true
@@ -57,7 +57,7 @@ let test_of_env_rejects_missing_sasl_fields () =
     with_env "KAFKA_SASL_MECHANISM" "" (fun () ->
       with_env "KAFKA_SASL_USERNAME" "user" (fun () ->
         with_env "KAFKA_SASL_PASSWORD" "pass" (fun () ->
-          match Kafka_security.of_env () with
+          match Kafka.Security.of_env () with
           | Ok _ -> Alcotest.fail "expected missing SASL mechanism error"
           | Error msg ->
             Alcotest.(check bool) "message names missing env var" true
@@ -68,34 +68,40 @@ let test_of_env_rejects_unknown_sasl_mechanism () =
     with_env "KAFKA_SASL_MECHANISM" "GSSAPI" (fun () ->
       with_env "KAFKA_SASL_USERNAME" "user" (fun () ->
         with_env "KAFKA_SASL_PASSWORD" "pass" (fun () ->
-          match Kafka_security.of_env () with
+          match Kafka.Security.of_env () with
           | Ok _ -> Alcotest.fail "expected unknown SASL mechanism error"
           | Error msg ->
             Alcotest.(check bool) "message names bad mechanism" true
               (contains msg "GSSAPI")))))
 
 let test_plaintext_ok () =
-  let conf = Kafka_raw.conf_new () in
   Alcotest.(check bool) "plaintext → Ok" true
-    (Kafka_security.apply conf Kafka_security.default = Ok ())
+    (Kafka.Security.settings Kafka.Security.default = [ ("security.protocol", "plaintext") ])
 
 let test_ssl_no_sasl_ok () =
-  let conf = Kafka_raw.conf_new () in
-  let sec = Kafka_security.Ssl { ssl_ca_location = None } in
+  let sec = Kafka.Security.Ssl { ssl_ca_location = None } in
   Alcotest.(check bool) "ssl without sasl → Ok" true
-    (Kafka_security.apply conf sec = Ok ())
+    (Kafka.Security.settings sec = [ ("security.protocol", "ssl") ])
 
 let test_sasl_ssl_all_fields_ok () =
-  let conf = Kafka_raw.conf_new () in
-  let sec = Kafka_security.Sasl_ssl { ssl_ca_location = None; sasl = full_sasl } in
+  let sec = Kafka.Security.Sasl_ssl { ssl_ca_location = None; sasl = full_sasl } in
   Alcotest.(check bool) "sasl_ssl all fields → Ok" true
-    (Kafka_security.apply conf sec = Ok ())
+    (Kafka.Security.settings sec
+     = [ ("security.protocol", "sasl_ssl");
+         ("sasl.mechanism", "PLAIN");
+         ("sasl.username", "user");
+         ("sasl.password", "pass");
+       ])
 
 let test_sasl_plaintext_all_fields_ok () =
-  let conf = Kafka_raw.conf_new () in
-  let sec = Kafka_security.Sasl_plaintext full_sasl in
+  let sec = Kafka.Security.Sasl_plaintext full_sasl in
   Alcotest.(check bool) "sasl_plaintext all fields → Ok" true
-    (Kafka_security.apply conf sec = Ok ())
+    (Kafka.Security.settings sec
+     = [ ("security.protocol", "sasl_plaintext");
+         ("sasl.mechanism", "PLAIN");
+         ("sasl.username", "user");
+         ("sasl.password", "pass");
+       ])
 
 let () =
   Alcotest.run "kafka_security" [
@@ -106,10 +112,10 @@ let () =
       Alcotest.test_case "of_env rejects missing SASL fields" `Quick test_of_env_rejects_missing_sasl_fields;
       Alcotest.test_case "of_env rejects unknown SASL mechanism" `Quick test_of_env_rejects_unknown_sasl_mechanism;
     ];
-    "apply", [
-      Alcotest.test_case "plaintext ok"               `Quick test_plaintext_ok;
-      Alcotest.test_case "ssl no sasl ok"             `Quick test_ssl_no_sasl_ok;
-      Alcotest.test_case "sasl_ssl all fields ok"     `Quick test_sasl_ssl_all_fields_ok;
-      Alcotest.test_case "sasl_plaintext all fields ok" `Quick test_sasl_plaintext_all_fields_ok;
+    "settings", [
+      Alcotest.test_case "plaintext"               `Quick test_plaintext_ok;
+      Alcotest.test_case "ssl no sasl"             `Quick test_ssl_no_sasl_ok;
+      Alcotest.test_case "sasl_ssl all fields"     `Quick test_sasl_ssl_all_fields_ok;
+      Alcotest.test_case "sasl_plaintext all fields" `Quick test_sasl_plaintext_all_fields_ok;
     ];
   ]

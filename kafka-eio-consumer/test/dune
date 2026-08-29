@@ -1,7 +1,7 @@
 (executable
  (name test_consumer_integration)
  (modules test_consumer_integration)
- (libraries kafka_eio_consumer kafka_eio_producer kafka_eio_core kafka_test_helpers alcotest eio_main unix))
+ (libraries kafka_eio kafka_test_helpers alcotest eio_main unix))
 
 (rule
  (alias runtest-integration)
@@ -10,4 +10,4 @@
 (test
  (name test_consumer_unit)
  (modules test_consumer_unit)
- (libraries kafka_eio_consumer kafka_eio_core alcotest eio_main unix))
+ (libraries kafka_eio alcotest eio_main unix))

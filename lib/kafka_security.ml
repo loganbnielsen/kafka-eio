@@ -94,30 +94,22 @@ let of_env () =
     let* sasl = sasl_of_env () in
     Ok (Sasl_ssl { ssl_ca_location; sasl })
 
-let apply conf t =
-  let errs = ref [] in
-  let set k v = match Kafka_raw.conf_set conf k v with
-    | Ok ()   -> ()
-    | Error s -> errs := ("kafka security conf " ^ k ^ ": " ^ s) :: !errs
+let settings t =
+  let sasl_settings sasl =
+    [ ("sasl.mechanism", mechanism_to_string sasl.mechanism);
+      ("sasl.username", sasl.username);
+      ("sasl.password", sasl.password);
+    ]
   in
-  let set_sasl sasl =
-    set "sasl.mechanism" (mechanism_to_string sasl.mechanism);
-    set "sasl.username" sasl.username;
-    set "sasl.password" sasl.password
-  in
-  (match t with
+  match t with
    | Plaintext ->
-     set "security.protocol" (protocol_to_string `Plaintext)
+     [ ("security.protocol", protocol_to_string `Plaintext) ]
    | Ssl { ssl_ca_location } ->
-     set "security.protocol" (protocol_to_string `Ssl);
-     Option.iter (set "ssl.ca.location") ssl_ca_location
+     ("security.protocol", protocol_to_string `Ssl)
+     :: Option.fold ~none:[] ~some:(fun ca -> [ ("ssl.ca.location", ca) ]) ssl_ca_location
    | Sasl_plaintext sasl ->
-     set "security.protocol" (protocol_to_string `Sasl_plaintext);
-     set_sasl sasl
+     ("security.protocol", protocol_to_string `Sasl_plaintext) :: sasl_settings sasl
    | Sasl_ssl { ssl_ca_location; sasl } ->
-     set "security.protocol" (protocol_to_string `Sasl_ssl);
-     Option.iter (set "ssl.ca.location") ssl_ca_location;
-     set_sasl sasl);
-  match !errs with
-  | []   -> Ok ()
-  | errs -> Error (String.concat "; " (List.rev errs))
+     ("security.protocol", protocol_to_string `Sasl_ssl)
+     :: Option.fold ~none:[] ~some:(fun ca -> [ ("ssl.ca.location", ca) ]) ssl_ca_location
+     @ sasl_settings sasl

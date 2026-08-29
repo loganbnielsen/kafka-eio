@@ -155,10 +155,13 @@ val commit_offsets
   -> bool
   -> (unit, int) result
 
-(** Delivery pipe *)
+(** Internal delivery notification helpers. [Kafka_producer] uses
+    [next_delivery]; [pipe_create]/[delivery_sizeof]/[read_delivery] remain
+    only for raw compatibility. *)
 val pipe_create     : unit -> int * int
 val delivery_sizeof : unit -> int
 val read_delivery   : int -> int64 * int
+val next_delivery   : kafka_handle -> (int64 * int) option
 
 (** Transactional API.
 

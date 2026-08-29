@@ -42,8 +42,6 @@ val of_env : unit -> (t, string) result
     - [KAFKA_SASL_USERNAME]
     - [KAFKA_SASL_PASSWORD] *)
 
-val apply : Kafka_raw.kafka_conf -> t -> (unit, string) result
-(** Set librdkafka [security.protocol], [ssl.ca.location], and [sasl.*] keys on [conf].
-    Returns [Error msg] if any key is rejected by librdkafka. SASL credentials
-    are required by the [Sasl_plaintext] and [Sasl_ssl] constructors.
-    Called internally by producer and consumer [conf_of_config]; not part of the public API. *)
+val settings : t -> (string * string) list
+(** Librdkafka config key/value pairs for this security mode. Producer and
+    consumer apply them to their raw configs internally. *)

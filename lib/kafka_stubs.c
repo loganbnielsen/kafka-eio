@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <fcntl.h>
+#include <pthread.h>
 #if defined(__APPLE__)
 #include <libkern/OSByteOrder.h>
 #define htole32(x) OSSwapHostToLittleInt32(x)
@@ -75,6 +76,18 @@ typedef struct {
   int32_t  err;
 } delivery_result_t;
 
+typedef struct delivery_node {
+  delivery_result_t result;
+  struct delivery_node *next;
+} delivery_node_t;
+
+typedef struct {
+  int write_fd;
+  pthread_mutex_t mutex;
+  delivery_node_t *head;
+  delivery_node_t *tail;
+} delivery_state_t;
+
 _Static_assert(offsetof(delivery_result_t, correlation_id) == 0,
                "correlation_id offset mismatch — OCaml reads uint64 at byte 0");
 _Static_assert(offsetof(delivery_result_t, err) == 8,
@@ -84,21 +97,27 @@ static void delivery_cb(rd_kafka_t *rk,
                         const rd_kafka_message_t *msg,
                         void *opaque)
 {
+  (void)rk;
   if (!msg->_private) return;   /* no correlation id — fire-and-forget */
-  int write_fd = *((int *)opaque);
+  delivery_state_t *state = (delivery_state_t *)opaque;
   delivery_result_t r;
-  /* Wire format is fixed little-endian (OCaml decodes via Cstruct.LE)
-     regardless of host order; without htole*, a big-endian host would
-     write and later decode garbage correlation ids/error codes. */
-  r.correlation_id = (int64_t)htole64((uint64_t)(uintptr_t)msg->_private);
-  r.err            = (int32_t)htole32((uint32_t)msg->err);
-  /* write is async-signal-safe and thread-safe. write_fd is O_NONBLOCK (see
-     ocaml_kafka_pipe_create): a full pipe returns EAGAIN immediately instead
-     of blocking this librdkafka thread, and we drop the receipt rather than
-     retry — the corresponding produce_await promise stays unresolved until
-     Kafka_producer.close drains it, rather than stalling delivery entirely. */
+  r.correlation_id = (int64_t)(uintptr_t)msg->_private;
+  r.err            = (int32_t)msg->err;
+  delivery_node_t *node = malloc(sizeof(delivery_node_t));
+  if (!node) return;
+  node->result = r;
+  node->next = NULL;
+  pthread_mutex_lock(&state->mutex);
+  if (state->tail) state->tail->next = node;
+  else state->head = node;
+  state->tail = node;
+  pthread_mutex_unlock(&state->mutex);
+
+  /* The pipe is only a wakeup now. If it is full, an unread wake byte already
+     exists; dropping this byte cannot lose the queued receipt. */
+  char wake = 1;
   ssize_t n;
-  do { n = write(write_fd, &r, sizeof(r)); } while (n < 0 && errno == EINTR);
+  do { n = write(state->write_fd, &wake, 1); } while (n < 0 && errno == EINTR);
 }
 
 /* ------------------------------------------------------------------ */
@@ -157,18 +176,33 @@ CAMLprim value ocaml_rd_kafka_new(value type_v, value conf_v, value write_fd_v) 
     : RD_KAFKA_CONSUMER;
 
   /* Install delivery callback for producers */
-  int *fd_ptr = NULL;
+  delivery_state_t *state = NULL;
   if (rk_type == RD_KAFKA_PRODUCER) {
-    fd_ptr = malloc(sizeof(int));
-    *fd_ptr = Int_val(write_fd_v);
+    state = malloc(sizeof(delivery_state_t));
+    if (!state) caml_failwith("kafka_new: malloc delivery state failed");
+    state->write_fd = Int_val(write_fd_v);
+    int flags = fcntl(state->write_fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(state->write_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+      free(state);
+      caml_failwith("kafka_new: fcntl(O_NONBLOCK) failed");
+    }
+    state->head = NULL;
+    state->tail = NULL;
+    if (pthread_mutex_init(&state->mutex, NULL) != 0) {
+      free(state);
+      caml_failwith("kafka_new: pthread_mutex_init failed");
+    }
     rd_kafka_conf_set_dr_msg_cb(conf, delivery_cb);
-    rd_kafka_conf_set_opaque(conf, fd_ptr);
+    rd_kafka_conf_set_opaque(conf, state);
   }
 
   char errstr[512];
   rd_kafka_t *rk = rd_kafka_new(rk_type, conf, errstr, sizeof(errstr));
   if (!rk) {
-    free(fd_ptr); /* librdkafka destroyed conf but not our opaque; free(NULL) is a no-op */
+    if (state) {
+      pthread_mutex_destroy(&state->mutex);
+      free(state);
+    }
     CAMLlocal1(err_str);
     err_str = caml_copy_string(errstr);
     result = caml_alloc(1, 1); /* Error s */
@@ -591,16 +625,25 @@ CAMLprim value ocaml_rd_kafka_destroy(value handle_v) {
   rd_kafka_t *rk = *((rd_kafka_t **)Data_custom_val(handle_v));
   if (rk) {
     *((rd_kafka_t **)Data_custom_val(handle_v)) = NULL;
-    /* Producer handles stash a malloc'd write-fd (see ocaml_rd_kafka_new)
+    /* Producer handles stash delivery state (see ocaml_rd_kafka_new)
        as the opaque delivery-callback pointer — must read it before
        destroy invalidates rk, and free it here or it leaks every close.
        Consumer handles never set one, so this is NULL and free is a
        no-op. */
-    void *fd_ptr = rd_kafka_opaque(rk);
+    delivery_state_t *state = (delivery_state_t *)rd_kafka_opaque(rk);
     caml_release_runtime_system();
     rd_kafka_destroy(rk);
     caml_acquire_runtime_system();
-    free(fd_ptr);
+    if (state) {
+      delivery_node_t *node = state->head;
+      while (node) {
+        delivery_node_t *next = node->next;
+        free(node);
+        node = next;
+      }
+      pthread_mutex_destroy(&state->mutex);
+      free(state);
+    }
   }
   CAMLreturn(Val_unit);
 }
@@ -973,18 +1016,35 @@ CAMLprim value ocaml_kafka_delivery_sizeof(value unit) {
   CAMLreturn(Val_int(sizeof(delivery_result_t)));
 }
 
+CAMLprim value ocaml_kafka_next_delivery(value handle_v) {
+  CAMLparam1(handle_v);
+  CAMLlocal2(some, pair);
+  rd_kafka_t *rk = *((rd_kafka_t **)Data_custom_val(handle_v));
+  delivery_state_t *state = rk ? (delivery_state_t *)rd_kafka_opaque(rk) : NULL;
+  if (!state) CAMLreturn(Val_int(0));
+
+  pthread_mutex_lock(&state->mutex);
+  delivery_node_t *node = state->head;
+  if (node) {
+    state->head = node->next;
+    if (!state->head) state->tail = NULL;
+  }
+  pthread_mutex_unlock(&state->mutex);
+
+  if (!node) CAMLreturn(Val_int(0));
+  pair = caml_alloc_tuple(2);
+  Store_field(pair, 0, caml_copy_int64(node->result.correlation_id));
+  Store_field(pair, 1, Val_int((int)node->result.err));
+  free(node);
+  some = caml_alloc(1, 0);
+  Store_field(some, 0, pair);
+  CAMLreturn(some);
+}
+
 /* ------------------------------------------------------------------ */
-/* pipe_create — creates a non-blocking pipe, returns (read_fd,        */
-/* write_fd) as a pair of ints                                          */
+/* pipe_create — old raw helper, unused by Kafka_producer.             */
 /* ------------------------------------------------------------------ */
 
-/* The write end must be non-blocking: delivery_cb writes one
-   delivery_result_t per ack from a librdkafka background thread. If the
-   read side falls behind and the pipe fills, a blocking write() would
-   stall that thread (and delivery/transactions/shutdown with it) — under
-   O_NONBLOCK it instead returns EAGAIN and delivery_cb drops the receipt.
-   The read end stays blocking; Eio's io_uring reads don't need
-   O_NONBLOCK. */
 CAMLprim value ocaml_kafka_pipe_create(value unit) {
   CAMLparam1(unit);
   CAMLlocal1(pair);
@@ -1102,8 +1162,7 @@ CAMLprim value ocaml_rd_kafka_produce_v_bytecode(value *argv, int argc) {
 }
 
 /* ------------------------------------------------------------------ */
-/* pipe_read_delivery — reads one delivery_result_t from read_fd.      */
-/* Returns (correlation_id, err_code) pair.                             */
+/* pipe_read_delivery — old raw helper, unused by Kafka_producer.      */
 /* ------------------------------------------------------------------ */
 
 CAMLprim value ocaml_kafka_read_delivery(value fd_v) {

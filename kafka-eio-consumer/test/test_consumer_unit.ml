@@ -2,36 +2,36 @@
     Regression coverage: public operations
     must reject use after close instead of touching a destroyed handle. *)
 
-let unreachable_config : Kafka_consumer.config =
+let unreachable_config : Kafka.Consumer.config =
   { brokers      = ["127.0.0.1:1"]
   ; group_id     = "test-unit-closed"
   ; topics       = ["test-unit-closed-topic"]
-  ; offset_reset = Kafka_consumer.Latest
+  ; offset_reset = Kafka.Consumer.Latest
   ; auto_commit  = false
-  ; security     = Kafka_security.default
+  ; security     = Kafka.Security.default
   ; properties   = []
   }
 
-let dummy_message : Kafka_consumer.message =
+let dummy_message : Kafka.Consumer.message =
   { topic = "t"; partition = 0l; offset = 0L; key = None
   ; value = Some (Bytes.of_string "x"); timestamp = None; headers = [] }
 
 let test_ops_after_close_return_destroy () =
   Eio_main.run @@ fun _env ->
     Eio.Switch.run @@ fun sw ->
-      match Kafka_consumer.create unreachable_config ~sw with
-      | Error e -> Alcotest.failf "create failed: %s" (Kafka_error.to_string e)
+      match Kafka.Consumer.create unreachable_config ~sw with
+      | Error e -> Alcotest.failf "create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
-        Kafka_consumer.close consumer;
-        let is_destroy = function Error Kafka_error.Destroy -> true | _ -> false in
+        Kafka.Consumer.close consumer;
+        let is_destroy = function Error Kafka.Error.Destroy -> true | _ -> false in
         Alcotest.(check bool) "poll after close" true
-          (is_destroy (Kafka_consumer.poll consumer));
+          (is_destroy (Kafka.Consumer.poll consumer));
         Alcotest.(check bool) "fetch after close" true
-          (is_destroy (Kafka_consumer.fetch consumer));
+          (is_destroy (Kafka.Consumer.fetch consumer));
         Alcotest.(check bool) "commit after close" true
-          (is_destroy (Kafka_consumer.commit consumer dummy_message));
+          (is_destroy (Kafka.Consumer.commit consumer dummy_message));
         Alcotest.(check bool) "commit_all after close" true
-          (is_destroy (Kafka_consumer.commit_all consumer))
+          (is_destroy (Kafka.Consumer.commit_all consumer))
 
 let () =
   let open Alcotest in

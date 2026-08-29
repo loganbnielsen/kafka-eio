@@ -123,7 +123,7 @@ let delivery_fiber t sw =
       else
         match
           Eio.Fiber.first
-            (fun () -> `Read (Eio.Flow.read_exact t.pipe_source buf))
+            (fun () -> `Read (ignore (Eio.Flow.single_read t.pipe_source buf)))
             (fun () -> Eio.Promise.await t.delivery_stop; `Stop)
         with
         | `Stop -> ()

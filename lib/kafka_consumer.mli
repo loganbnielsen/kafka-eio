@@ -134,6 +134,12 @@ val default_queue_capacity : int
 (** [16]. Default bound for each partition's in-memory message queue in
     [consume_partitioned]. *)
 
+type 'e consume_error =
+  | Handler_error of 'e
+  | Invalid_config of string
+(** Result error for [consume_partitioned]: either the handler's own error, or
+    invalid consumer-loop configuration rejected before polling. *)
+
 (** [consume_partitioned t ~sw ~clock ?retry ?on_retry ?on_warning
     ?queue_capacity ~handler] is like [consume] but routes each message to a
     dedicated per-partition fiber, so retry backoff on one partition doesn't
@@ -148,7 +154,7 @@ val default_queue_capacity : int
     [default_queue_capacity]); routing dispatches synchronously rather than
     via a per-message fiber, so a full partition queue stalls routing to
     every other partition until it drains — a deliberate tradeoff for a
-    hard memory bound over unbounded fiber growth.
+    hard memory bound over unbounded fiber growth. Must be positive.
 
     [on_retry ~partition ~attempt ~delay_s] fires just before each retry
     sleep. [on_warning] receives text for ack-misuse and retry/exhaustion
@@ -176,4 +182,4 @@ val consume_partitioned
   -> ?queue_capacity:int
   -> handler:(message -> ack:(unit -> (unit, Kafka_error.t) result) -> 'e handler_result)
   -> unit
-  -> (unit, 'e) result
+  -> (unit, 'e consume_error) result

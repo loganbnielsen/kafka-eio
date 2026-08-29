@@ -17,6 +17,11 @@
 - Fixed a `produce_await` deadlock introduced earlier in this same release:
   the delivery-callback rework above moved to a 1-byte wake pipe, but the
   reader still waited for a full 4096-byte buffer before returning.
+- `Kafka.Consumer.stream` is no longer part of the public `Kafka` facade; callers
+  should use the read-only `fetch`, `poll`, or `consume` APIs instead of receiving
+  the writable internal queue.
+- `Kafka.Consumer.consume` now stops normally when a directly closed consumer was
+  blocked waiting for the next message.
 - Renamed a local `rc` binding in `produce_await` to `send_result` — the abbreviation
   read ambiguously next to Kafka's own return-code conventions. No public API change.
 - Comment-only pass over the C stubs and consumer/producer: multi-paragraph rationale

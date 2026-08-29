@@ -38,10 +38,13 @@ let test_poll_messages () =
         Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
         let received = ref [] in
-        let stream = Kafka.Consumer.stream consumer in
         (match Eio.Time.with_timeout env#clock 10.0 (fun () ->
           while List.length !received < 5 do
-            let msg = Eio.Stream.take stream in
+            let msg =
+              match Kafka.Consumer.fetch consumer with
+              | Ok msg -> msg
+              | Error e -> Alcotest.failf "fetch failed: %s" (Kafka.Error.to_string e)
+            in
             received := msg :: !received;
             ignore (Kafka.Consumer.commit consumer msg)
           done;
@@ -73,7 +76,7 @@ let test_consume_with_ack () =
         Alcotest.(check int) "consumed 3 messages" 3 !count;
         Kafka.Consumer.close consumer
 
-let test_stream_api () =
+let test_fetch_api () =
   Eio_main.run @@ fun env ->
     Eio.Switch.run @@ fun sw ->
       seed_messages sw 4;
@@ -82,18 +85,21 @@ let test_stream_api () =
       | Error e ->
         Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
-        let stream = Kafka.Consumer.stream consumer in
         let msgs = ref [] in
         (match Eio.Time.with_timeout env#clock 10.0 (fun () ->
           for _ = 1 to 4 do
-            let msg = Eio.Stream.take stream in
+            let msg =
+              match Kafka.Consumer.fetch consumer with
+              | Ok msg -> msg
+              | Error e -> Alcotest.failf "fetch failed: %s" (Kafka.Error.to_string e)
+            in
             msgs := msg :: !msgs
           done;
           Ok ()
         ) with
-        | Error `Timeout -> Alcotest.fail "timed out waiting for stream messages"
+        | Error `Timeout -> Alcotest.fail "timed out waiting for fetched messages"
         | Ok () -> ());
-        Alcotest.(check int) "stream yielded 4 messages" 4 (List.length !msgs);
+        Alcotest.(check int) "fetch returned 4 messages" 4 (List.length !msgs);
         Kafka.Consumer.close consumer
 
 (* A NULL payload (tombstone) must stay distinct from a genuine
@@ -580,7 +586,7 @@ let () =
     "consume", [
       test_case "poll messages"    `Slow test_poll_messages;
       test_case "consume with ack" `Slow test_consume_with_ack;
-      test_case "stream api"       `Slow test_stream_api;
+      test_case "fetch api"        `Slow test_fetch_api;
       test_case "tombstone stays distinct from empty value" `Slow test_tombstone;
       test_case "header with null value stays distinct from empty string" `Slow
         test_header_with_null_value;

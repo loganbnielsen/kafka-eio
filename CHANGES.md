@@ -1,6 +1,6 @@
 # Changes
 
-## Unreleased
+## 0.2.0
 
 - Public modules now ship as one `kafka-eio` library. The raw librdkafka FFI
   module is private; supported caller-facing modules are `Kafka.Producer`,
@@ -14,6 +14,9 @@
   pipe backpressure. The C delivery callback now queues receipts in native
   memory and uses the pipe only as a wakeup, so a full pipe cannot strand an
   awaiting promise until shutdown.
+- Fixed a `produce_await` deadlock introduced earlier in this same release:
+  the delivery-callback rework above moved to a 1-byte wake pipe, but the
+  reader still waited for a full 4096-byte buffer before returning.
 - Renamed a local `rc` binding in `produce_await` to `send_result` — the abbreviation
   read ambiguously next to Kafka's own return-code conventions. No public API change.
 - Comment-only pass over the C stubs and consumer/producer: multi-paragraph rationale

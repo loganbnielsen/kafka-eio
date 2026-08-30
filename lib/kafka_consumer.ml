@@ -319,7 +319,7 @@ let default_retry = {
 let default_queue_capacity = 16
 
 type 'e consume_error =
-  | Handler_error of 'e
+  | Handler_errors of (int32 * 'e) list
   | Invalid_config of string
 
 (* Routes each message to a per-partition fiber so retry backoff on one
@@ -343,7 +343,7 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
   else
   let stop    = Atomic.make false in
   let stop_p, stop_r = Eio.Promise.create () in
-  let first_err = ref None in
+  let handler_errors = ref [] in
   let streams
     : (int32, (message * (unit -> (unit, Kafka_error.t) result)) option Eio.Stream.t) Hashtbl.t =
     Hashtbl.create 4
@@ -412,7 +412,7 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
                         (Printf.sprintf
                            "exhausted %d attempt(s) for topic=%s partition=%ld offset=%Ld"
                            (n + 1) msg.topic msg.partition msg.offset);
-                      first_err := Some e;
+                      handler_errors := (msg.partition, e) :: !handler_errors;
                       signal_stop ();
                       loop () (* see the Stop case above — must drain, not exit *)
                     end else begin
@@ -471,6 +471,8 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
     routing_loop ();
     Hashtbl.iter (fun _ s -> Eio.Stream.add s None) streams
   );
-  match !first_err with
-  | Some e -> Stdlib.Error (Handler_error e)
-  | None   -> Stdlib.Ok ()
+  match !handler_errors with
+  | [] -> Stdlib.Ok ()
+  | errors ->
+    Stdlib.Error (Handler_errors
+      (List.sort (fun (p1, _) (p2, _) -> Int32.compare p1 p2) errors))

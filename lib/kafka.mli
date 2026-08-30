@@ -338,7 +338,7 @@ module Consumer : sig
   val default_queue_capacity : int
 
   type 'e consume_error =
-    | Handler_error of 'e
+    | Handler_errors of (int32 * 'e) list
     | Invalid_config of string
 
   val consume_partitioned

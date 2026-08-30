@@ -356,15 +356,15 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
     (* Watchdog: closing the consumer directly (instead of cancelling ~sw)
        never resolves stop_p, which would otherwise leave routing_loop's
        Fiber.first blocked forever once poll_fiber stops feeding t.stream.
-       Poll is_closed and signal stop ourselves, bounding the hang to one
-       poll interval. *)
+       t.closed_p is resolved by close for exactly this signal (consume,
+       above, already awaits it the same way) — await it directly instead
+       of polling is_closed, so a direct close is noticed immediately
+       rather than after up to one poll interval. Cancelling ~sw ends this
+       daemon fiber on its own; no separate stop check needed. *)
     Eio.Fiber.fork_daemon ~sw (fun () ->
-      let rec watch () =
-        if Atomic.get stop then `Stop_daemon
-        else if is_closed t then (signal_stop (); `Stop_daemon)
-        else (Eio.Time.sleep clock 0.1; watch ())
-      in
-      watch ());
+      Eio.Promise.await t.closed_p;
+      signal_stop ();
+      `Stop_daemon);
     let get_or_create_stream partition =
       match Hashtbl.find_opt streams partition with
       | Some s -> s

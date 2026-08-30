@@ -120,7 +120,14 @@ val consumer_handle : Kafka_consumer_handle.t -> consumer_handle
 (**/**)
 
 type transaction_error =
-  | App_error of Kafka_error.t  (** [f] returned [Error _], or raised. *)
+  | App_error of { error : Kafka_error.t; abort_error : Kafka_error.t option }
+      (** [f] returned [Error error]. [with_transaction] always attempts an
+          abort in this case; [abort_error] is [Some _] only when that
+          recovery abort itself failed (logged to stderr either way, since
+          there's no [on_warning]-style hook on this path). When [f] raises
+          instead of returning [Error], the original exception propagates
+          unwrapped — an abort is still attempted, but its outcome can only
+          be logged, not attached to anything. *)
   | Txn_failure of txn_failure  (** a transactional-API call itself failed. *)
 
 val string_of_transaction_error : transaction_error -> string

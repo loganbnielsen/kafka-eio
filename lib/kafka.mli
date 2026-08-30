@@ -267,7 +267,12 @@ module Producer : sig
   type consumer_handle
 
   type transaction_error =
-    | App_error of Error.t
+    | App_error of { error : Error.t; abort_error : Error.t option }
+        (** [f] returned [Error error]. [with_transaction] always attempts an
+            abort in this case; [abort_error] is [Some _] only when that
+            recovery abort itself failed (logged to stderr either way). When
+            [f] raises instead, the original exception propagates unwrapped —
+            an abort is still attempted, but its outcome can only be logged. *)
     | Txn_failure of txn_failure
 
   val string_of_transaction_error : transaction_error -> string

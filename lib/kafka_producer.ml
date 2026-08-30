@@ -89,9 +89,7 @@ let get_or_create_topic t name =
   | None ->
     match Kafka_raw.topic_new t.handle name with
     | Ok rkt -> Hashtbl.add t.topic_cache name rkt; Ok rkt
-    | Error msg ->
-      Printf.eprintf "kafka-eio: topic_new %S failed: %s\n%!" name msg;
-      Error Kafka_error.Invalid_arg
+    | Error msg -> Error (Kafka_error.Config_error (Printf.sprintf "topic_new %S: %s" name msg))
 
 let drain_deliveries t =
   let rec loop () =
@@ -368,11 +366,11 @@ type consumer_handle = Kafka_consumer_handle.t
 let consumer_handle h = h
 
 type transaction_error =
-  | App_error of Kafka_error.t
+  | App_error of { error : Kafka_error.t; abort_error : Kafka_error.t option }
   | Txn_failure of txn_failure
 
 let string_of_transaction_error = function
-  | App_error e -> Kafka_error.to_string e
+  | App_error { error; _ } -> Kafka_error.to_string error
   | Txn_failure f -> Kafka_error.to_string f.error
 
 let txn_failure_of_raw ?abort_error (e : Kafka_raw.txn_error) : txn_failure = {
@@ -396,8 +394,21 @@ let abort_if_required t (e : Kafka_raw.txn_error) =
     | Ok () -> None
     | Error abort_err -> Some (Kafka_error.of_int abort_err.code)
 
+(* Unconditional abort (unlike abort_if_required, not gated on a
+   requires_abort flag — any callback failure requires one). Logs an
+   abort failure to stderr since there's no on_warning-style hook on
+   this path; still not silently discarded. *)
+let abort_unconditionally t =
+  match Kafka_raw.abort_transaction t.handle 5000 with
+  | Ok () -> None
+  | Error abort_err ->
+    let abort_error = Kafka_error.of_int abort_err.code in
+    Printf.eprintf "kafka-eio: with_transaction: recovery abort failed: %s\n%!"
+      (Kafka_error.to_string abort_error);
+    Some abort_error
+
 let with_transaction t ?consumer_offsets f =
-  if is_closed t then Error (App_error Kafka_error.Destroy)
+  if is_closed t then Error (App_error { error = Kafka_error.Destroy; abort_error = None })
   else
   match t.delivery_mode with
   | Exactly_once _ ->
@@ -409,11 +420,13 @@ let with_transaction t ?consumer_offsets f =
           state/concurrent-transaction errors. *)
        match f () with
        | exception exn ->
-         ignore (Kafka_raw.abort_transaction t.handle 5000);
+         (* The abort's own failure, if any, is logged by abort_unconditionally
+            but can't be attached here — exn propagates as-is, unwrapped. *)
+         ignore (abort_unconditionally t);
          raise exn
-       | Error _ as e ->
-         ignore (Kafka_raw.abort_transaction t.handle 5000);
-         Result.map_error (fun k -> App_error k) e
+       | Error error ->
+         let abort_error = abort_unconditionally t in
+         Error (App_error { error; abort_error })
        | Ok () ->
          let offsets_sent =
            match consumer_offsets with
@@ -431,4 +444,4 @@ let with_transaction t ?consumer_offsets f =
             | Error e ->
               let abort_error = abort_if_required t e in
               Error (Txn_failure (txn_failure_of_raw ?abort_error e))))
-  | _ -> Error (App_error Kafka_error.Not_implemented)
+  | _ -> Error (App_error { error = Kafka_error.Not_implemented; abort_error = None })

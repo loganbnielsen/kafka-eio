@@ -116,6 +116,42 @@ let test_with_transaction_aborts_on_exception () =
              (Kafka.Producer.string_of_transaction_error e));
         Kafka.Producer.close producer
 
+(* Regression test: with_transaction used to ignore abort_transaction's own
+   result when f() returns Error, discarding it into a bare Kafka_error.t
+   with no slot for a second (abort) failure. App_error is now a record
+   with an abort_error field, populated only when the recovery abort
+   itself fails — this confirms the happy-abort shape (abort_error = None)
+   and that the transaction was genuinely left in a clean, reusable state. *)
+let test_with_transaction_error_shape_on_callback_error () =
+  Eio_main.run @@ fun _ ->
+    Eio.Switch.run @@ fun sw ->
+      let cfg : Kafka.Producer.config = {
+        brokers       = Kafka_test_helpers.brokers ();
+        delivery_mode = Kafka.Producer.Exactly_once
+                          { transaction_id = Printf.sprintf "test-txn-app-error-%d" (Unix.getpid ()) };
+        linger_ms     = None;
+        security      = Kafka.Security.default;
+        properties    = [];
+      } in
+      match Kafka.Producer.create cfg ~sw with
+      | Error e -> Alcotest.failf "create failed: %s" (Kafka.Error.to_string e)
+      | Ok producer ->
+        (match Kafka.Producer.with_transaction producer (fun () -> Error Kafka.Error.Application) with
+         | Ok () -> Alcotest.fail "expected the callback's Error to propagate"
+         | Error (Kafka.Producer.Txn_failure _) ->
+           Alcotest.fail "expected App_error for a callback-returned Error, not Txn_failure"
+         | Error (Kafka.Producer.App_error { error; abort_error }) ->
+           Alcotest.(check bool) "original error preserved" true (error = Kafka.Error.Application);
+           Alcotest.(check bool) "abort succeeded cleanly" true (abort_error = None));
+        (* The transaction must have been genuinely aborted, not left open. *)
+        (match Kafka.Producer.with_transaction producer (fun () -> Ok ()) with
+         | Ok ()   -> ()
+         | Error e ->
+           Alcotest.failf
+             "second transaction failed — first transaction was likely left open: %s"
+             (Kafka.Producer.string_of_transaction_error e));
+        Kafka.Producer.close producer
+
 (* send_offsets_to_transaction must commit exactly the offsets the caller
    says it processed, not the consumer's current position. Seeds two
    messages, processes only the first inside a transaction, then confirms
@@ -250,6 +286,8 @@ let () =
     "transactions", [
       test_case "with_transaction aborts on exception" `Slow
         test_with_transaction_aborts_on_exception;
+      test_case "with_transaction App_error carries abort_error shape" `Slow
+        test_with_transaction_error_shape_on_callback_error;
       test_case "transaction commits only the processed offset" `Slow
         test_transaction_commits_only_processed_offset;
     ];

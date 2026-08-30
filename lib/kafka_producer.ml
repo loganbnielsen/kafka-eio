@@ -360,6 +360,7 @@ type txn_failure = {
   is_fatal       : bool;
   is_retriable   : bool;
   requires_abort : bool;
+  abort_error    : Kafka_error.t option;
 }
 
 type consumer_handle = Kafka_consumer_handle.t
@@ -374,18 +375,26 @@ let string_of_transaction_error = function
   | App_error e -> Kafka_error.to_string e
   | Txn_failure f -> Kafka_error.to_string f.error
 
-let txn_failure_of_raw (e : Kafka_raw.txn_error) : txn_failure = {
+let txn_failure_of_raw ?abort_error (e : Kafka_raw.txn_error) : txn_failure = {
   error          = Kafka_error.of_int e.code;
   is_fatal       = e.is_fatal;
   is_retriable   = e.is_retriable;
   requires_abort = e.requires_abort;
+  abort_error;
 }
 
 (* librdkafka reports whether a transactional-call failure requires
    aborting the transaction as a flag on the error itself (not derivable
-   from the error code) — abort only when it says so. *)
+   from the error code) — abort only when it says so. Returns the abort's
+   own error when the abort itself fails, so a caller recovering from a
+   non-fatal original failure can tell "recovered cleanly" from "still
+   wedged" instead of the abort's outcome being silently discarded. *)
 let abort_if_required t (e : Kafka_raw.txn_error) =
-  if e.requires_abort then ignore (Kafka_raw.abort_transaction t.handle 5000)
+  if not e.requires_abort then None
+  else
+    match Kafka_raw.abort_transaction t.handle 5000 with
+    | Ok () -> None
+    | Error abort_err -> Some (Kafka_error.of_int abort_err.code)
 
 let with_transaction t ?consumer_offsets f =
   if is_closed t then Error (App_error Kafka_error.Destroy)
@@ -413,9 +422,13 @@ let with_transaction t ?consumer_offsets f =
              Kafka_raw.send_offsets_to_transaction t.handle (Kafka_consumer_handle.to_raw ch) offsets 5000
          in
          (match offsets_sent with
-          | Error e -> abort_if_required t e; Error (Txn_failure (txn_failure_of_raw e))
+          | Error e ->
+            let abort_error = abort_if_required t e in
+            Error (Txn_failure (txn_failure_of_raw ?abort_error e))
           | Ok () ->
             match Kafka_raw.commit_transaction t.handle 5000 with
             | Ok () -> Ok ()
-            | Error e -> abort_if_required t e; Error (Txn_failure (txn_failure_of_raw e))))
+            | Error e ->
+              let abort_error = abort_if_required t e in
+              Error (Txn_failure (txn_failure_of_raw ?abort_error e))))
   | _ -> Error (App_error Kafka_error.Not_implemented)

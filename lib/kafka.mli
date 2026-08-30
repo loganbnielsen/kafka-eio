@@ -204,6 +204,87 @@ module Security : sig
   val settings : t -> (string * string) list
 end
 
+module Consumer : sig
+  type 'e handler_result =
+    | Continue
+    | Stop
+    | Error of 'e
+
+  type offset_reset =
+    | Earliest
+    | Latest
+
+  type config = {
+    brokers      : string list;
+    group_id     : string;
+    topics       : string list;
+    offset_reset : offset_reset;
+    auto_commit  : bool;
+    security     : Security.t;
+    properties   : (string * string) list;
+  }
+
+  type message = {
+    topic     : string;
+    partition : int32;
+    offset    : int64;
+    key       : bytes option;
+    value     : bytes option;
+    timestamp : int64 option;
+    headers   : (string * string option) list;
+  }
+
+  type t
+
+  val create
+    :  ?on_ready:(unit -> unit)
+    -> ?on_poll_error:(int -> unit)
+    -> config
+    -> sw:Eio.Switch.t
+    -> (t, Error.t) result
+
+  val close : t -> unit
+  val fetch : t -> (message, Error.t) result
+  val poll : t -> (message option, Error.t) result
+  val commit : t -> message -> (unit, Error.t) result
+  val commit_all : t -> (unit, Error.t) result
+
+  (** Process messages until the handler returns [Stop], the consumer is
+      closed, or the handler returns [Error _]. Closing the consumer stops the
+      loop as [Ok ()]; handler errors are returned unchanged. *)
+  val consume
+    :  t
+    -> ?on_warning:(string -> unit)
+    -> handler:(message -> ack:(unit -> (unit, Error.t) result) -> 'e handler_result)
+    -> unit
+    -> (unit, 'e) result
+
+  type retry_policy = {
+    base_delay_s : float;
+    max_delay_s  : float;
+    max_attempts : int;
+  }
+
+  val default_retry : retry_policy
+  val default_queue_capacity : int
+
+  type 'e consume_error =
+    | Handler_errors of (int32 * 'e) list
+    | Invalid_config of string
+
+  val consume_partitioned
+    :  t
+    -> sw:Eio.Switch.t
+    -> clock:_ Eio.Time.clock
+    -> ?retry:retry_policy
+    -> ?on_retry:(partition:int32 -> attempt:int -> delay_s:float -> unit)
+    -> ?on_warning:(string -> unit)
+    -> ?queue_capacity:int
+    -> handler:(message -> ack:(unit -> (unit, Error.t) result) -> 'e handler_result)
+    -> unit
+    -> (unit, 'e consume_error) result
+end
+
 module Producer : sig
   type delivery_mode =
     | At_least_once
@@ -264,8 +345,6 @@ module Producer : sig
             this being the real cause. *)
   }
 
-  type consumer_handle
-
   type transaction_error =
     | App_error of { error : Error.t; abort_error : Error.t option }
         (** [f] returned [Error error]. [with_transaction] always attempts an
@@ -279,89 +358,7 @@ module Producer : sig
 
   val with_transaction
     :  t
-    -> ?consumer_offsets:(consumer_handle * (string * int32 * int64) list)
+    -> ?consumer_offsets:(Consumer.t * (string * int32 * int64) list)
     -> (unit -> (unit, Error.t) result)
     -> (unit, transaction_error) result
-end
-
-module Consumer : sig
-  type 'e handler_result =
-    | Continue
-    | Stop
-    | Error of 'e
-
-  type offset_reset =
-    | Earliest
-    | Latest
-
-  type config = {
-    brokers      : string list;
-    group_id     : string;
-    topics       : string list;
-    offset_reset : offset_reset;
-    auto_commit  : bool;
-    security     : Security.t;
-    properties   : (string * string) list;
-  }
-
-  type message = {
-    topic     : string;
-    partition : int32;
-    offset    : int64;
-    key       : bytes option;
-    value     : bytes option;
-    timestamp : int64 option;
-    headers   : (string * string option) list;
-  }
-
-  type t
-
-  val create
-    :  ?on_ready:(unit -> unit)
-    -> ?on_poll_error:(int -> unit)
-    -> config
-    -> sw:Eio.Switch.t
-    -> (t, Error.t) result
-
-  val close : t -> unit
-  val handle : t -> Producer.consumer_handle
-  val fetch : t -> (message, Error.t) result
-  val poll : t -> (message option, Error.t) result
-  val commit : t -> message -> (unit, Error.t) result
-  val commit_all : t -> (unit, Error.t) result
-
-  (** Process messages until the handler returns [Stop], the consumer is
-      closed, or the handler returns [Error _]. Closing the consumer stops the
-      loop as [Ok ()]; handler errors are returned unchanged. *)
-  val consume
-    :  t
-    -> ?on_warning:(string -> unit)
-    -> handler:(message -> ack:(unit -> (unit, Error.t) result) -> 'e handler_result)
-    -> unit
-    -> (unit, 'e) result
-
-  type retry_policy = {
-    base_delay_s : float;
-    max_delay_s  : float;
-    max_attempts : int;
-  }
-
-  val default_retry : retry_policy
-  val default_queue_capacity : int
-
-  type 'e consume_error =
-    | Handler_errors of (int32 * 'e) list
-    | Invalid_config of string
-
-  val consume_partitioned
-    :  t
-    -> sw:Eio.Switch.t
-    -> clock:_ Eio.Time.clock
-    -> ?retry:retry_policy
-    -> ?on_retry:(partition:int32 -> attempt:int -> delay_s:float -> unit)
-    -> ?on_warning:(string -> unit)
-    -> ?queue_capacity:int
-    -> handler:(message -> ack:(unit -> (unit, Error.t) result) -> 'e handler_result)
-    -> unit
-    -> (unit, 'e consume_error) result
 end

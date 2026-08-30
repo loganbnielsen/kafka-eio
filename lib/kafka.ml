@@ -4,7 +4,19 @@
     [Kafka_raw] modules are implementation detail ([private_modules] in
     [lib/dune]) and are not visible to callers outside this library. *)
 
-module Producer = Kafka_producer
-module Consumer = Kafka_consumer
 module Error = Kafka_error
 module Security = Kafka_security
+
+module Consumer = Kafka_consumer
+
+module Producer = struct
+  include Kafka_producer
+
+  let with_transaction t ?consumer_offsets f =
+    let consumer_offsets =
+      Option.map
+        (fun (consumer, offsets) -> (Kafka_consumer.handle consumer, offsets))
+        consumer_offsets
+    in
+    Kafka_producer.with_transaction t ?consumer_offsets f
+end

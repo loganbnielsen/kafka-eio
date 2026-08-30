@@ -216,8 +216,7 @@ let test_transaction_commits_only_processed_offset () =
          | Error e -> Alcotest.failf "txn producer create failed: %s" (Kafka.Error.to_string e)
          | Ok txn_producer ->
            (match Kafka.Producer.with_transaction txn_producer
-                    ~consumer_offsets:(Kafka.Consumer.handle consumer,
-                                       [ (first_msg.topic, first_msg.partition, first_msg.offset) ])
+                    ~consumer_offsets:(consumer, [ (first_msg.topic, first_msg.partition, first_msg.offset) ])
                     (fun () ->
                        Kafka.Producer.produce txn_producer ~topic:output_topic
                          ~value:(Some (Bytes.of_string "out-0")) ())

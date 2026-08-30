@@ -255,6 +255,13 @@ module Producer : sig
     is_fatal       : bool;
     is_retriable   : bool;
     requires_abort : bool;
+    abort_error    : Error.t option;
+        (** [None] when [requires_abort] is [false], or when the required
+            abort itself succeeded. [Some _] when [with_transaction]'s
+            recovery abort failed — a caller retrying based on
+            [is_fatal = false] could otherwise hit a confusing "invalid
+            state" error on the next transaction with no link back to
+            this being the real cause. *)
   }
 
   type consumer_handle

@@ -101,6 +101,14 @@ type txn_failure = {
   is_fatal       : bool;
   is_retriable   : bool;
   requires_abort : bool;
+  abort_error    : Kafka_error.t option;
+      (** [None] when [requires_abort] is [false], or when the required
+          abort itself succeeded. [Some _] when [with_transaction]'s
+          recovery abort — attempted because [requires_abort] was [true] —
+          itself failed, so [error] alone would otherwise look like the
+          whole story: a caller retrying based on [is_fatal = false] could
+          hit a confusing "invalid state" error on the next transaction
+          with no link back to this being the real cause. *)
 }
 
 type consumer_handle

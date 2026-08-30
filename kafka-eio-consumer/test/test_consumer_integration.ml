@@ -324,17 +324,17 @@ let test_consume_partitioned_stop_does_not_hang () =
                   ~retry ~queue_capacity:3 ~handler ()))
         in
         (* Either termination is a legitimate, non-hanging outcome here:
-           Ok () if the other partition's Stop won the race, Handler_error
-           "stuck" if the stuck partition self-exhausted first. What matters
-           is that the call returns at all instead of hanging. *)
+           Ok () if the other partition's Stop won the race, Handler_errors
+           if the stuck partition self-exhausted first. What matters is that
+           the call returns at all instead of hanging. *)
         (match result with
          | Error `Timeout ->
            Alcotest.fail "consume_partitioned hung — a stopped partition fiber \
                           left its queue abandoned-but-full"
          | Ok (Ok ()) -> ()
-         | Ok (Error (Kafka.Consumer.Handler_error "stuck")) -> ()
-         | Ok (Error (Kafka.Consumer.Handler_error e)) ->
-           Alcotest.failf "unexpected handler error surfaced: %s" e
+         | Ok (Error (Kafka.Consumer.Handler_errors [ (_partition, "stuck") ])) -> ()
+         | Ok (Error (Kafka.Consumer.Handler_errors errors)) ->
+           Alcotest.failf "unexpected handler error count: %d" (List.length errors)
          | Ok (Error (Kafka.Consumer.Invalid_config e)) ->
            Alcotest.failf "unexpected invalid config: %s" e);
         Kafka.Consumer.close consumer

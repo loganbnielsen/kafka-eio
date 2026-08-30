@@ -135,10 +135,10 @@ val default_queue_capacity : int
     [consume_partitioned]. *)
 
 type 'e consume_error =
-  | Handler_error of 'e
+  | Handler_errors of (int32 * 'e) list
   | Invalid_config of string
-(** Result error for [consume_partitioned]: either the handler's own error, or
-    invalid consumer-loop configuration rejected before polling. *)
+(** Result error for [consume_partitioned]: either exhausted handler errors by
+    partition, or invalid consumer-loop configuration rejected before polling. *)
 
 (** [consume_partitioned t ~sw ~clock ?retry ?on_retry ?on_warning
     ?queue_capacity ~handler] is like [consume] but routes each message to a

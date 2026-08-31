@@ -16,3 +16,8 @@
  (name test_kafka_security)
  (modules test_kafka_security)
  (libraries kafka_eio alcotest unix))
+
+(test
+ (name test_kafka_topic_name)
+ (modules test_kafka_topic_name)
+ (libraries kafka_eio alcotest))

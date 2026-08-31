@@ -6,6 +6,7 @@
 
 module Error = Kafka_error
 module Security = Kafka_security
+module Topic_name = Kafka_topic_name
 
 module Consumer = Kafka_consumer
 

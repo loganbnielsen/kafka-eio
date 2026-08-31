@@ -394,20 +394,23 @@ let abort_if_required t (e : Kafka_raw.txn_error) =
     | Ok () -> None
     | Error abort_err -> Some (Kafka_error.of_int abort_err.code)
 
+let default_on_warning msg = Printf.eprintf "kafka-eio: %s\n%!" msg
+
 (* Unconditional abort (unlike abort_if_required, not gated on a
-   requires_abort flag — any callback failure requires one). Logs an
-   abort failure to stderr since there's no on_warning-style hook on
-   this path; still not silently discarded. *)
-let abort_unconditionally t =
+   requires_abort flag — any callback failure requires one). Reports an
+   abort failure via on_warning (default: stderr); still not silently
+   discarded either way. *)
+let abort_unconditionally ~on_warning t =
   match Kafka_raw.abort_transaction t.handle 5000 with
   | Ok () -> None
   | Error abort_err ->
     let abort_error = Kafka_error.of_int abort_err.code in
-    Printf.eprintf "kafka-eio: with_transaction: recovery abort failed: %s\n%!"
-      (Kafka_error.to_string abort_error);
+    on_warning
+      (Printf.sprintf "with_transaction: recovery abort failed: %s"
+         (Kafka_error.to_string abort_error));
     Some abort_error
 
-let with_transaction t ?consumer_offsets f =
+let with_transaction t ?consumer_offsets ?(on_warning = default_on_warning) f =
   if is_closed t then Error (App_error { error = Kafka_error.Destroy; abort_error = None })
   else
   match t.delivery_mode with
@@ -420,12 +423,12 @@ let with_transaction t ?consumer_offsets f =
           state/concurrent-transaction errors. *)
        match f () with
        | exception exn ->
-         (* The abort's own failure, if any, is logged by abort_unconditionally
+         (* The abort's own failure, if any, is reported by abort_unconditionally
             but can't be attached here — exn propagates as-is, unwrapped. *)
-         ignore (abort_unconditionally t);
+         ignore (abort_unconditionally ~on_warning t);
          raise exn
        | Error error ->
-         let abort_error = abort_unconditionally t in
+         let abort_error = abort_unconditionally ~on_warning t in
          Error (App_error { error; abort_error })
        | Ok () ->
          let offsets_sent =

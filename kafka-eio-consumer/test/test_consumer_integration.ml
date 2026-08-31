@@ -639,6 +639,79 @@ let test_commit_all_survives_rebalance () =
              msg.topic msg.partition msg.offset);
         Kafka.Consumer.close c3
 
+let test_pause_resume_partition () =
+  Eio_main.run @@ fun env ->
+    Eio.Switch.run @@ fun sw ->
+      let pid = Unix.getpid () in
+      let topic = Printf.sprintf "kafka-eio-test-pause-resume-%d" pid in
+      let group_id = Printf.sprintf "kafka-eio-test-pause-resume-group-%d" pid in
+      let seed value =
+        match Kafka.Producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
+        | Error e -> Alcotest.failf "seed producer create failed: %s" (Kafka.Error.to_string e)
+        | Ok producer ->
+          (match Eio.Promise.await (Kafka.Producer.produce_await producer
+                   ~topic ~value:(Some (Bytes.of_string value)) ()) with
+           | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka.Error.to_string e)
+           | Ok () -> ());
+          Kafka.Producer.close producer
+      in
+      (match Kafka.Producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
+       | Error e -> Alcotest.failf "topic producer create failed: %s" (Kafka.Error.to_string e)
+       | Ok producer ->
+         (match Kafka.Producer.create_topic producer
+                  ~topic_name:topic ~partitions:1 ~replication_factor:1 with
+          | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka.Error.to_string e)
+          | Ok () -> ());
+         Kafka.Producer.close producer);
+      seed "before-pause";
+
+      let cfg : Kafka.Consumer.config = {
+        brokers      = Kafka_test_helpers.brokers ();
+        group_id;
+        topics       = [ topic ];
+        offset_reset = Kafka.Consumer.Earliest;
+        auto_commit  = false;
+        security     = Kafka.Security.default;
+        properties   = [];
+      } in
+      match Kafka.Consumer.create cfg ~sw with
+      | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
+      | Ok consumer ->
+        let poll_until_some ~budget_s =
+          let deadline = Unix.gettimeofday () +. budget_s in
+          let rec loop () =
+            match Kafka.Consumer.poll consumer with
+            | Error e -> Alcotest.failf "poll failed: %s" (Kafka.Error.to_string e)
+            | Ok (Some msg) -> Some msg
+            | Ok None ->
+              if Unix.gettimeofday () > deadline then None
+              else (Eio.Time.sleep env#clock 0.1; loop ())
+          in
+          loop ()
+        in
+        let value_of (msg : Kafka.Consumer.message) =
+          Option.value ~default:"" (Option.map Bytes.to_string msg.value)
+        in
+        (match poll_until_some ~budget_s:5.0 with
+         | Some msg -> Alcotest.(check string) "seeded message arrives" "before-pause" (value_of msg)
+         | None -> Alcotest.fail "expected the seeded message before pausing");
+
+        (match Kafka.Consumer.pause_partition consumer ~topic ~partition:0l with
+         | Error e -> Alcotest.failf "pause_partition failed: %s" (Kafka.Error.to_string e)
+         | Ok () -> ());
+        seed "after-pause";
+        Alcotest.(check bool) "no message delivered while paused" true
+          (poll_until_some ~budget_s:2.0 = None);
+
+        (match Kafka.Consumer.resume_partition consumer ~topic ~partition:0l with
+         | Error e -> Alcotest.failf "resume_partition failed: %s" (Kafka.Error.to_string e)
+         | Ok () -> ());
+        (match poll_until_some ~budget_s:5.0 with
+         | Some msg -> Alcotest.(check string) "message arrives after resume" "after-pause" (value_of msg)
+         | None -> Alcotest.fail "expected the post-pause message after resuming");
+
+        Kafka.Consumer.close consumer
+
 let () =
   let open Alcotest in
   run "kafka_consumer_integration" [
@@ -661,5 +734,7 @@ let () =
         test_consume_partitioned_stops_on_direct_close;
       test_case "commit_all survives a rebalance without rolling back" `Slow
         test_commit_all_survives_rebalance;
+      test_case "pause_partition/resume_partition control delivery" `Slow
+        test_pause_resume_partition;
     ];
   ]

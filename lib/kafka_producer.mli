@@ -123,18 +123,18 @@ type transaction_error =
   | App_error of { error : Kafka_error.t; abort_error : Kafka_error.t option }
       (** [f] returned [Error error]. [with_transaction] always attempts an
           abort in this case; [abort_error] is [Some _] only when that
-          recovery abort itself failed (logged to stderr either way, since
-          there's no [on_warning]-style hook on this path). When [f] raises
-          instead of returning [Error], the original exception propagates
-          unwrapped — an abort is still attempted, but its outcome can only
-          be logged, not attached to anything. *)
+          recovery abort itself failed (also reported via [with_transaction]'s
+          [on_warning], default stderr). When [f] raises instead of returning
+          [Error], the original exception propagates unwrapped — an abort is
+          still attempted, but its outcome can only be reported via
+          [on_warning], not attached to anything. *)
   | Txn_failure of txn_failure  (** a transactional-API call itself failed. *)
 
 val string_of_transaction_error : transaction_error -> string
 
-(** [with_transaction t ?consumer_offsets f] runs [f] inside a Kafka
-    transaction. Commits on [Ok], aborts on [Error] or exception. Requires
-    [delivery_mode = Exactly_once].
+(** [with_transaction t ?consumer_offsets ?on_warning f] runs [f] inside a
+    Kafka transaction. Commits on [Ok], aborts on [Error] or exception.
+    Requires [delivery_mode = Exactly_once].
 
     [consumer_offsets], if given, is [(consumer_handle, offsets)] where
     [offsets] are the exact (topic, partition, offset-of-last-processed-
@@ -142,9 +142,15 @@ val string_of_transaction_error : transaction_error -> string
     from the consumed messages' [topic]/[partition]/[offset] fields. Only
     these offsets are committed as part of the transaction; the consumer's
     current assignment or position is never read, so a transaction can
-    never advance past a message [f] did not actually process. *)
+    never advance past a message [f] did not actually process.
+
+    [on_warning] receives a human-readable message if the recovery abort
+    itself fails after [f] returns [Error] or raises (default: one line to
+    stderr) — see [App_error]'s doc for when this can happen and why the
+    failure can only be reported here, not returned. *)
 val with_transaction
   :  t
   -> ?consumer_offsets:(consumer_handle * (string * int32 * int64) list)
+  -> ?on_warning:(string -> unit)
   -> (unit -> (unit, Kafka_error.t) result)
   -> (unit, transaction_error) result

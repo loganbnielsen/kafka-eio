@@ -12,11 +12,11 @@ module Consumer = Kafka_consumer
 module Producer = struct
   include Kafka_producer
 
-  let with_transaction t ?consumer_offsets f =
+  let with_transaction t ?consumer_offsets ?on_warning f =
     let consumer_offsets =
       Option.map
         (fun (consumer, offsets) -> (Kafka_consumer.handle consumer, offsets))
         consumer_offsets
     in
-    Kafka_producer.with_transaction t ?consumer_offsets f
+    Kafka_producer.with_transaction t ?consumer_offsets ?on_warning f
 end

@@ -302,6 +302,19 @@ let commit_all t =
       | Ok ()   -> Result.ok ()
       | Error i -> err i
 
+(* pause_partition/resume_partition are local operations (no broker
+   round-trip) — see Kafka_raw's own doc. consume_partitioned already uses
+   both internally for its in-memory retry backoff, below; these are the
+   same primitive, exposed for callers building their own retry/backpressure
+   scheme (e.g. a retry-topics consumer) outside consume_partitioned. *)
+let pause_partition t ~topic ~partition =
+  if is_closed t then Result.error Kafka_error.Destroy
+  else Result.ok (Kafka_raw.pause_partition t.handle topic partition)
+
+let resume_partition t ~topic ~partition =
+  if is_closed t then Result.error Kafka_error.Destroy
+  else Result.ok (Kafka_raw.resume_partition t.handle topic partition)
+
 (* ── Per-partition fiber consumer with retry + pause/resume ──────────────── *)
 
 type retry_policy = {

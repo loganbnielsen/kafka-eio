@@ -118,6 +118,17 @@ val commit : t -> message -> (unit, Kafka_error.t) result
     message is actually processed. *)
 val commit_all : t -> (unit, Kafka_error.t) result
 
+val pause_partition : t -> topic:string -> partition:int32 -> (unit, Kafka_error.t) result
+(** Pause delivery for one partition. Local operation — no broker
+    round-trip; safe to call from any fiber. [consume_partitioned] already
+    uses this internally to stop its stream buffer from filling during an
+    in-memory retry backoff sleep; exposed here for callers implementing
+    their own retry or backpressure scheme outside [consume_partitioned]
+    (e.g. a retry-topics consumer). *)
+
+val resume_partition : t -> topic:string -> partition:int32 -> (unit, Kafka_error.t) result
+(** Resume a partition paused with {!pause_partition}. *)
+
 (** Retry policy for [consume_partitioned]. *)
 type retry_policy = {
   base_delay_s : float;

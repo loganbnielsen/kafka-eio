@@ -249,6 +249,17 @@ module Consumer : sig
   val commit : t -> message -> (unit, Error.t) result
   val commit_all : t -> (unit, Error.t) result
 
+  val pause_partition : t -> topic:string -> partition:int32 -> (unit, Error.t) result
+  (** Pause delivery for one partition. Local operation — no broker
+      round-trip; safe to call from any fiber. [consume_partitioned] already
+      uses this internally to stop its stream buffer from filling during an
+      in-memory retry backoff sleep; exposed here for callers implementing
+      their own retry or backpressure scheme outside [consume_partitioned]
+      (e.g. a retry-topics consumer). *)
+
+  val resume_partition : t -> topic:string -> partition:int32 -> (unit, Error.t) result
+  (** Resume a partition paused with {!pause_partition}. *)
+
   (** Process messages until the handler returns [Stop], the consumer is
       closed, or the handler returns [Error _]. Closing the consumer stops the
       loop as [Ok ()]; handler errors are returned unchanged. *)
@@ -349,9 +360,10 @@ module Producer : sig
     | App_error of { error : Error.t; abort_error : Error.t option }
         (** [f] returned [Error error]. [with_transaction] always attempts an
             abort in this case; [abort_error] is [Some _] only when that
-            recovery abort itself failed (logged to stderr either way). When
-            [f] raises instead, the original exception propagates unwrapped —
-            an abort is still attempted, but its outcome can only be logged. *)
+            recovery abort itself failed (also reported via [with_transaction]'s
+            [on_warning], default stderr). When [f] raises instead, the
+            original exception propagates unwrapped — an abort is still
+            attempted, but its outcome can only be reported via [on_warning]. *)
     | Txn_failure of txn_failure
 
   val string_of_transaction_error : transaction_error -> string
@@ -359,6 +371,7 @@ module Producer : sig
   val with_transaction
     :  t
     -> ?consumer_offsets:(Consumer.t * (string * int32 * int64) list)
+    -> ?on_warning:(string -> unit)
     -> (unit -> (unit, Error.t) result)
     -> (unit, transaction_error) result
 end

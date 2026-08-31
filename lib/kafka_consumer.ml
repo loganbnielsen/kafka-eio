@@ -405,7 +405,7 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
                     loop ()
                   | Error e ->
                     let exhausted =
-                      retry.max_attempts >= 0 && n >= retry.max_attempts
+                      retry.max_attempts >= 0 && n + 1 >= retry.max_attempts
                     in
                     if exhausted then begin
                       on_warning
@@ -425,7 +425,7 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
                         (Printf.sprintf
                            "attempt %d failed, retrying in %.0fs (topic=%s partition=%ld offset=%Ld)"
                            (n + 1) delay msg.topic msg.partition msg.offset);
-                      on_retry ~partition:msg.partition ~attempt:n ~delay_s:delay;
+                      on_retry ~partition:msg.partition ~attempt:(n + 1) ~delay_s:delay;
                       if not (is_closed t) then
                         Kafka_raw.pause_partition t.handle msg.topic msg.partition;
                       let interrupted =

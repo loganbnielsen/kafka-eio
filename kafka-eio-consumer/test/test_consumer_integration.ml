@@ -339,6 +339,62 @@ let test_consume_partitioned_stop_does_not_hang () =
            Alcotest.failf "unexpected invalid config: %s" e);
         Kafka.Consumer.close consumer
 
+let test_consume_partitioned_max_attempts_counts_total_executions () =
+  Eio_main.run @@ fun env ->
+    Eio.Switch.run @@ fun sw ->
+      let pid = Unix.getpid () in
+      let topic = Printf.sprintf "kafka-eio-test-max-attempts-%d" pid in
+      (match Kafka.Producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
+       | Error e -> Alcotest.failf "seed producer create failed: %s" (Kafka.Error.to_string e)
+       | Ok producer ->
+         (match Kafka.Producer.create_topic producer
+                  ~topic_name:topic ~partitions:1 ~replication_factor:1 with
+          | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka.Error.to_string e)
+          | Ok () -> ());
+         (match Eio.Promise.await (Kafka.Producer.produce_await producer
+                  ~topic ~value:(Some (Bytes.of_string "boom")) ()) with
+          | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka.Error.to_string e)
+          | Ok () -> ());
+         Kafka.Producer.close producer);
+
+      let cfg : Kafka.Consumer.config = {
+        brokers      = Kafka_test_helpers.brokers ();
+        group_id     = Printf.sprintf "kafka-eio-test-max-attempts-group-%d" pid;
+        topics       = [ topic ];
+        offset_reset = Kafka.Consumer.Earliest;
+        auto_commit  = false;
+        security     = Kafka.Security.default;
+        properties   = [];
+      } in
+      match Kafka.Consumer.create cfg ~sw with
+      | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
+      | Ok consumer ->
+        let calls = ref 0 in
+        let retries = ref 0 in
+        let retry : Kafka.Consumer.retry_policy =
+          { base_delay_s = 0.0; max_delay_s = 0.0; max_attempts = 1 }
+        in
+        let result =
+          Eio.Time.with_timeout_exn env#clock 10.0 (fun () ->
+            Kafka.Consumer.consume_partitioned consumer ~sw ~clock:env#clock
+              ~retry
+              ~on_retry:(fun ~partition:_ ~attempt:_ ~delay_s:_ -> incr retries)
+              ~handler:(fun _msg ~ack:_ ->
+                incr calls;
+                Kafka.Consumer.Error "failed")
+              ())
+        in
+        Alcotest.(check int) "one total handler execution" 1 !calls;
+        Alcotest.(check int) "no retry scheduled" 0 !retries;
+        (match result with
+         | Error (Kafka.Consumer.Handler_errors [ (_partition, "failed") ]) -> ()
+         | Ok () -> Alcotest.fail "expected handler exhaustion"
+         | Error (Kafka.Consumer.Handler_errors errors) ->
+           Alcotest.failf "unexpected handler error count: %d" (List.length errors)
+         | Error (Kafka.Consumer.Invalid_config e) ->
+           Alcotest.failf "unexpected invalid config: %s" e);
+        Kafka.Consumer.close consumer
+
 (* librdkafka's default auto.offset.store advances the "stored" position
    on every message poll_fiber prefetches, whether processed or not —
    commit_all (which commits that position for a NULL partition list)
@@ -597,6 +653,8 @@ let () =
         test_zero_length_key_distinct_from_no_key;
       test_case "consume_partitioned stop does not hang" `Slow
         test_consume_partitioned_stop_does_not_hang;
+      test_case "consume_partitioned max_attempts counts total executions" `Slow
+        test_consume_partitioned_max_attempts_counts_total_executions;
       test_case "commit_all does not commit past what was processed" `Slow
         test_commit_all_does_not_commit_past_processed;
       test_case "consume_partitioned stops on direct close" `Slow

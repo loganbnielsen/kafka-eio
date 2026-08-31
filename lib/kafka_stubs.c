@@ -1006,16 +1006,6 @@ CAMLprim value ocaml_rd_kafka_send_offsets_to_transaction(
   CAMLreturn(result);
 }
 
-/* ------------------------------------------------------------------ */
-/* delivery_sizeof — returns sizeof(delivery_result_t) so OCaml can   */
-/* allocate a Cstruct buffer of exactly the right size.                */
-/* ------------------------------------------------------------------ */
-
-CAMLprim value ocaml_kafka_delivery_sizeof(value unit) {
-  CAMLparam1(unit);
-  CAMLreturn(Val_int(sizeof(delivery_result_t)));
-}
-
 CAMLprim value ocaml_kafka_next_delivery(value handle_v) {
   CAMLparam1(handle_v);
   CAMLlocal2(some, pair);
@@ -1039,25 +1029,6 @@ CAMLprim value ocaml_kafka_next_delivery(value handle_v) {
   some = caml_alloc(1, 0);
   Store_field(some, 0, pair);
   CAMLreturn(some);
-}
-
-/* ------------------------------------------------------------------ */
-/* pipe_create — old raw helper, unused by Kafka_producer.             */
-/* ------------------------------------------------------------------ */
-
-CAMLprim value ocaml_kafka_pipe_create(value unit) {
-  CAMLparam1(unit);
-  CAMLlocal1(pair);
-  int fds[2];
-  if (pipe(fds) < 0) caml_failwith("kafka_pipe_create: pipe() failed");
-  if (fcntl(fds[1], F_SETFL, O_NONBLOCK) < 0) {
-    close(fds[0]); close(fds[1]);
-    caml_failwith("kafka_pipe_create: fcntl(O_NONBLOCK) failed");
-  }
-  pair = caml_alloc_tuple(2);
-  Store_field(pair, 0, Val_int(fds[0]));
-  Store_field(pair, 1, Val_int(fds[1]));
-  CAMLreturn(pair);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1159,23 +1130,6 @@ CAMLprim value ocaml_rd_kafka_produce_v_bytecode(value *argv, int argc) {
   (void)argc;
   return ocaml_rd_kafka_produce_v(
     argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6]);
-}
-
-/* ------------------------------------------------------------------ */
-/* pipe_read_delivery — old raw helper, unused by Kafka_producer.      */
-/* ------------------------------------------------------------------ */
-
-CAMLprim value ocaml_kafka_read_delivery(value fd_v) {
-  CAMLparam1(fd_v);
-  CAMLlocal1(pair);
-  delivery_result_t r;
-  ssize_t n;
-  do { n = read(Int_val(fd_v), &r, sizeof(r)); } while (n < 0 && errno == EINTR);
-  if (n != sizeof(r)) caml_failwith("kafka_read_delivery: short read");
-  pair = caml_alloc_tuple(2);
-  Store_field(pair, 0, caml_copy_int64(r.correlation_id));
-  Store_field(pair, 1, Val_int((int)r.err));
-  CAMLreturn(pair);
 }
 
 /* ------------------------------------------------------------------ */

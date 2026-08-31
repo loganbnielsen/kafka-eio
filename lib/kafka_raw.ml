@@ -100,15 +100,6 @@ external commit_offsets
   -> (unit, int) result
   = "ocaml_rd_kafka_commit_offsets"
 
-external pipe_create : unit -> int * int
-  = "ocaml_kafka_pipe_create"
-
-external delivery_sizeof : unit -> int
-  = "ocaml_kafka_delivery_sizeof"
-
-external read_delivery : int -> int64 * int
-  = "ocaml_kafka_read_delivery"
-
 external next_delivery : kafka_handle -> (int64 * int) option
   = "ocaml_kafka_next_delivery"
 

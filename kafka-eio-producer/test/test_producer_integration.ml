@@ -190,7 +190,7 @@ let test_transaction_commits_only_processed_offset () =
         security     = Kafka.Security.default;
         properties   = [];
       } in
-      match Kafka.Consumer.create consumer_cfg ~sw with
+      match Kafka.Consumer.create ~clock:env#clock consumer_cfg ~sw with
       | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
         let first_msg = ref None in
@@ -228,7 +228,7 @@ let test_transaction_commits_only_processed_offset () =
         Kafka.Consumer.close consumer;
 
         Eio.Switch.run (fun sw2 ->
-          match Kafka.Consumer.create consumer_cfg ~sw:sw2 with
+          match Kafka.Consumer.create ~clock:env#clock consumer_cfg ~sw:sw2 with
           | Error e -> Alcotest.failf "second consumer create failed: %s" (Kafka.Error.to_string e)
           | Ok consumer2 ->
             let second_msg = ref None in

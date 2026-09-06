@@ -89,9 +89,14 @@ let conf_of_config (cfg : config) : (Kafka_raw.kafka_conf, string) result =
 let tuple_to_message (topic, partition, offset, key, value, timestamp, headers) =
   { topic; partition; offset; key; value; timestamp; headers }
 
+(* Must stay well under any reasonable max.poll.interval.ms (librdkafka's
+   own default is 300_000ms; even an aggressively-tuned custom value is
+   very unlikely to go below a few seconds) -- see create's ~clock doc. *)
+let keepalive_interval_s = 3.0
+
 (* Eio fibers must not sit in blocking C polls. Like the producer, watch a
    librdkafka queue with an fd and drain it with timeout 0 after wakeup. *)
-let poll_fiber t sw ~on_ready ~on_poll_error =
+let poll_fiber t sw ~clock ~on_ready ~on_poll_error =
   let wake_source = t.wake_source and wake_sink = t.wake_sink in
   let write_fd_int =
     Eio_unix.Fd.use_exn "kafka_consumer_queue_wake_fd"
@@ -115,7 +120,7 @@ let poll_fiber t sw ~on_ready ~on_poll_error =
       if not !notified && assignment <> [] then begin
         notified := true; on_ready ()
       end;
-      match Kafka_raw.consumer_queue_poll t.handle 0 with
+      match Kafka_raw.consumer_poll t.handle 0 with
       | Kafka_raw.Timeout -> ()
       | Kafka_raw.Msg tup ->
         if not !notified then begin notified := true; on_ready () end;
@@ -128,13 +133,21 @@ let poll_fiber t sw ~on_ready ~on_poll_error =
         Eio.Fiber.yield ();
         drain ()
     in
+    (* Racing the wake-fd read against a keepalive timeout, rather than
+       just reading with a fixed timeout_ms, keeps the fast path
+       (immediate wake on real traffic) exactly as before -- the timeout
+       only matters when nothing wakes the fd at all. *)
     let rec loop () =
       if Atomic.get t.closed then ()
       else
-        match Eio.Flow.single_read wake_source wake_buf with
+        match
+          Eio.Time.with_timeout clock keepalive_interval_s (fun () ->
+            Ok (Eio.Flow.single_read wake_source wake_buf))
+        with
         | exception (Eio.Cancel.Cancelled _) -> ()
         | exception End_of_file -> ()
-        | _n -> drain (); loop ()
+        | Error `Timeout -> drain (); loop ()
+        | Ok _n -> drain (); loop ()
     in
     Fun.protect
       ~finally:(fun () -> Eio.Promise.resolve t.poll_exit_r ())
@@ -176,7 +189,7 @@ let default_on_poll_error code =
   Printf.eprintf "kafka-eio: consumer poll error: %s\n%!"
     (Kafka_error.to_string (Kafka_error.of_int code))
 
-let create ?(on_ready = ignore) ?(on_poll_error = default_on_poll_error) (cfg : config) ~sw =
+let create ?(on_ready = ignore) ?(on_poll_error = default_on_poll_error) ~clock (cfg : config) ~sw =
   match conf_of_config cfg with
   | Error msg -> Result.error (Kafka_error.Config_error msg)
   | Ok conf ->
@@ -205,7 +218,7 @@ let create ?(on_ready = ignore) ?(on_poll_error = default_on_poll_error) (cfg : 
          poll_exit_r;
          last_processed = Hashtbl.create 4;
        } in
-       poll_fiber t sw ~on_ready ~on_poll_error;
+       poll_fiber t sw ~clock ~on_ready ~on_poll_error;
        Eio.Switch.on_release sw (fun () -> close t);
        Result.ok t)
 

@@ -33,7 +33,7 @@ let test_poll_messages () =
     Eio.Switch.run @@ fun sw ->
       seed_messages sw 5;
 
-      match Kafka.Consumer.create (make_consumer_config ()) ~sw with
+      match Kafka.Consumer.create ~clock:env#clock (make_consumer_config ()) ~sw with
       | Error e ->
         Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
@@ -56,11 +56,11 @@ let test_poll_messages () =
         Kafka.Consumer.close consumer
 
 let test_consume_with_ack () =
-  Eio_main.run @@ fun _env ->
+  Eio_main.run @@ fun env ->
     Eio.Switch.run @@ fun sw ->
       seed_messages sw 3;
 
-      match Kafka.Consumer.create (make_consumer_config ()) ~sw with
+      match Kafka.Consumer.create ~clock:env#clock (make_consumer_config ()) ~sw with
       | Error e ->
         Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
@@ -81,7 +81,7 @@ let test_fetch_api () =
     Eio.Switch.run @@ fun sw ->
       seed_messages sw 4;
 
-      match Kafka.Consumer.create (make_consumer_config ()) ~sw with
+      match Kafka.Consumer.create ~clock:env#clock (make_consumer_config ()) ~sw with
       | Error e ->
         Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
@@ -134,7 +134,7 @@ let test_tombstone () =
         security     = Kafka.Security.default;
         properties   = [];
       } in
-      match Kafka.Consumer.create cfg ~sw with
+      match Kafka.Consumer.create ~clock:env#clock cfg ~sw with
       | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
         let values = ref [] in
@@ -185,7 +185,7 @@ let test_header_with_null_value () =
         security     = Kafka.Security.default;
         properties   = [];
       } in
-      match Kafka.Consumer.create cfg ~sw with
+      match Kafka.Consumer.create ~clock:env#clock cfg ~sw with
       | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
         let msg = ref None in
@@ -238,7 +238,7 @@ let test_zero_length_key_distinct_from_no_key () =
         security     = Kafka.Security.default;
         properties   = [];
       } in
-      match Kafka.Consumer.create cfg ~sw with
+      match Kafka.Consumer.create ~clock:env#clock cfg ~sw with
       | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
         let keys = ref [] in
@@ -300,7 +300,7 @@ let test_consume_partitioned_stop_does_not_hang () =
         security     = Kafka.Security.default;
         properties   = [];
       } in
-      match Kafka.Consumer.create cfg ~sw with
+      match Kafka.Consumer.create ~clock:env#clock cfg ~sw with
       | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
         let stuck_partition = ref None in
@@ -366,7 +366,7 @@ let test_consume_partitioned_max_attempts_counts_total_executions () =
         security     = Kafka.Security.default;
         properties   = [];
       } in
-      match Kafka.Consumer.create cfg ~sw with
+      match Kafka.Consumer.create ~clock:env#clock cfg ~sw with
       | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
         let calls = ref 0 in
@@ -431,7 +431,7 @@ let test_commit_all_does_not_commit_past_processed () =
         security     = Kafka.Security.default;
         properties   = [];
       } in
-      (match Kafka.Consumer.create cfg ~sw with
+      (match Kafka.Consumer.create ~clock:env#clock cfg ~sw with
        | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
        | Ok consumer ->
          (* Let poll_fiber prefetch the whole backlog before processing
@@ -449,7 +449,7 @@ let test_commit_all_does_not_commit_past_processed () =
           | Ok () -> ());
          Kafka.Consumer.close consumer);
 
-      match Kafka.Consumer.create cfg ~sw with
+      match Kafka.Consumer.create ~clock:env#clock cfg ~sw with
       | Error e -> Alcotest.failf "second consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer2 ->
         let next = ref None in
@@ -500,7 +500,7 @@ let test_consume_partitioned_stops_on_direct_close () =
         security     = Kafka.Security.default;
         properties   = [];
       } in
-      match Kafka.Consumer.create cfg ~sw with
+      match Kafka.Consumer.create ~clock:env#clock cfg ~sw with
       | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
         let handler _msg ~ack = ignore (ack ()); Kafka.Consumer.Continue in
@@ -589,7 +589,7 @@ let test_commit_all_survives_rebalance () =
         in
         loop ()
       in
-      match Kafka.Consumer.create cfg ~sw with
+      match Kafka.Consumer.create ~clock:env#clock cfg ~sw with
       | Error e -> Alcotest.failf "c1 create failed: %s" (Kafka.Error.to_string e)
       | Ok c1 ->
         drain_and_ack c1 ~budget_s:5.0;
@@ -598,7 +598,7 @@ let test_commit_all_survives_rebalance () =
            partitions between c1 and c2. *)
         Eio.Switch.run (fun sw2 ->
           let c2_ready, c2_ready_r = Eio.Promise.create () in
-          match Kafka.Consumer.create cfg ~sw:sw2 ~on_ready:(fun () ->
+          match Kafka.Consumer.create ~clock:env#clock cfg ~sw:sw2 ~on_ready:(fun () ->
                   Eio.Promise.resolve c2_ready_r ()) with
           | Error e -> Alcotest.failf "c2 create failed: %s" (Kafka.Error.to_string e)
           | Ok c2 ->
@@ -620,7 +620,7 @@ let test_commit_all_survives_rebalance () =
          | Ok () -> ());
         Kafka.Consumer.close c1;
 
-      match Kafka.Consumer.create cfg ~sw with
+      match Kafka.Consumer.create ~clock:env#clock cfg ~sw with
       | Error e -> Alcotest.failf "c3 create failed: %s" (Kafka.Error.to_string e)
       | Ok c3 ->
         let unexpected = ref None in
@@ -674,7 +674,7 @@ let test_pause_resume_partition () =
         security     = Kafka.Security.default;
         properties   = [];
       } in
-      match Kafka.Consumer.create cfg ~sw with
+      match Kafka.Consumer.create ~clock:env#clock cfg ~sw with
       | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
         let poll_until_some ~budget_s =
@@ -712,6 +712,87 @@ let test_pause_resume_partition () =
 
         Kafka.Consumer.close consumer
 
+(* Regression test: poll_fiber's drain loop used to read messages via
+   rd_kafka_consume_queue on the raw consumer queue, which bypasses the
+   consumer-group housekeeping rd_kafka_consumer_poll performs -- including
+   resetting the max.poll.interval.ms watchdog. That housekeeping is driven
+   by the background queue itself (rebalance/heartbeat protocol events also
+   land on it, not just user messages), so drain() kept running on a fixed
+   cadence even with zero application traffic, but every drain silently
+   left the watchdog unreset -- the consumer was kicked from its group
+   every max.poll.interval.ms regardless of throughput. Confirmed live
+   against a real deployment: a consumer with zero messages in flight left
+   its group on an exact ~300s cadence (the librdkafka default), forever.
+   Using a short max.poll.interval.ms here keeps the same reproduction
+   fast: an idle period well past the (short) interval should not cost the
+   consumer its place in the group -- a subsequent message should still
+   arrive without needing a fresh join/sync rebalance round-trip. *)
+let test_idle_past_max_poll_interval_stays_in_group () =
+  Eio_main.run @@ fun env ->
+    Eio.Switch.run @@ fun sw ->
+      let pid = Unix.getpid () in
+      let topic = Printf.sprintf "kafka-eio-test-maxpoll-%d" pid in
+      let group_id = Printf.sprintf "kafka-eio-test-maxpoll-group-%d" pid in
+      (match Kafka.Producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
+       | Error e -> Alcotest.failf "topic producer create failed: %s" (Kafka.Error.to_string e)
+       | Ok producer ->
+         (match Kafka.Producer.create_topic producer
+                  ~topic_name:topic ~partitions:1 ~replication_factor:1 with
+          | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka.Error.to_string e)
+          | Ok () -> ());
+         Kafka.Producer.close producer);
+      let seed value =
+        match Kafka.Producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
+        | Error e -> Alcotest.failf "seed producer create failed: %s" (Kafka.Error.to_string e)
+        | Ok producer ->
+          (match Eio.Promise.await (Kafka.Producer.produce_await producer
+                   ~topic ~value:(Some (Bytes.of_string value)) ()) with
+           | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka.Error.to_string e)
+           | Ok () -> ());
+          Kafka.Producer.close producer
+      in
+      seed "before-idle";
+      let cfg : Kafka.Consumer.config = {
+        (Kafka_test_helpers.default_consumer_config ~group_id ~topics:[ topic ] ())
+        with properties = [ ("max.poll.interval.ms", "6000");
+                             ("session.timeout.ms", "6000") ]
+      } in
+      match Kafka.Consumer.create ~clock:env#clock cfg ~sw with
+      | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
+      | Ok consumer ->
+        let poll_until_some ~budget_s =
+          let deadline = Unix.gettimeofday () +. budget_s in
+          let rec loop () =
+            match Kafka.Consumer.poll consumer with
+            | Error e -> Alcotest.failf "poll failed: %s" (Kafka.Error.to_string e)
+            | Ok (Some msg) -> Some msg
+            | Ok None ->
+              if Unix.gettimeofday () > deadline then None
+              else (Eio.Time.sleep env#clock 0.1; loop ())
+          in
+          loop ()
+        in
+        (match poll_until_some ~budget_s:5.0 with
+         | Some _ -> ()
+         | None -> Alcotest.fail "expected the pre-idle message");
+        (* Idle for longer than max.poll.interval.ms, with no fetch/poll
+           calls -- exactly the window that used to cost the consumer its
+           group membership. *)
+        Eio.Time.sleep env#clock 7.0;
+        seed "after-idle";
+        let value_of (msg : Kafka.Consumer.message) =
+          Option.value ~default:"" (Option.map Bytes.to_string msg.value)
+        in
+        (match poll_until_some ~budget_s:2.0 with
+         | Some msg ->
+           Alcotest.(check string) "message arrives without needing a rejoin"
+             "after-idle" (value_of msg)
+         | None ->
+           Alcotest.fail
+             "consumer left its group during the idle window (max.poll.interval.ms \
+              regression) -- message did not arrive within a rejoin-free budget");
+        Kafka.Consumer.close consumer
+
 let () =
   let open Alcotest in
   run "kafka_consumer_integration" [
@@ -736,5 +817,7 @@ let () =
         test_commit_all_survives_rebalance;
       test_case "pause_partition/resume_partition control delivery" `Slow
         test_pause_resume_partition;
+      test_case "idle past max.poll.interval.ms stays in group" `Slow
+        test_idle_past_max_poll_interval_stays_in_group;
     ];
   ]

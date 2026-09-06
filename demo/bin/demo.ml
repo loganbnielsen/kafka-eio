@@ -8,7 +8,7 @@ let brokers =
 let topic = "sun-demo"
 
 let () =
-  Eio_main.run @@ fun _ ->
+  Eio_main.run @@ fun env ->
     Eio.Switch.run @@ fun sw ->
 
       (* ---- Producer ---- *)
@@ -55,7 +55,7 @@ let () =
         properties   = [];
       } in
       let consumer =
-        match Kafka.Consumer.create consumer_cfg ~sw with
+        match Kafka.Consumer.create ~clock:env#clock consumer_cfg ~sw with
         | Error e ->
           Printf.eprintf "Failed to create consumer: %s\n%!" (Kafka.Error.to_string e);
           exit 1

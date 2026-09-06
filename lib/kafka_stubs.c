@@ -390,22 +390,6 @@ CAMLprim value ocaml_rd_kafka_consumer_poll(value handle_v, value timeout_v) {
 }
 
 /* ------------------------------------------------------------------ */
-/* consumer_queue_poll — read one message from the consumer queue.       */
-/* ------------------------------------------------------------------ */
-
-CAMLprim value ocaml_rd_kafka_consumer_queue_poll(value handle_v, value timeout_v) {
-  CAMLparam2(handle_v, timeout_v);
-  rd_kafka_t *rk = *((rd_kafka_t **)Data_custom_val(handle_v));
-  int timeout_ms = Int_val(timeout_v);
-  caml_release_runtime_system();
-  rd_kafka_queue_t *q = rd_kafka_queue_get_consumer(rk);
-  rd_kafka_message_t *msg = rd_kafka_consume_queue(q, timeout_ms);
-  rd_kafka_queue_destroy(q);
-  caml_acquire_runtime_system();
-  CAMLreturn(poll_result_of_message(msg));
-}
-
-/* ------------------------------------------------------------------ */
 /* consumer_queue_events_enable : kafka_handle -> write_fd -> unit      */
 /* Same io-event registration as enable_queue_events, but on the        */
 /* consumer queue rather than the main queue.                           */

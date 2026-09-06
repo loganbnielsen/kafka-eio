@@ -17,9 +17,9 @@ let dummy_message : Kafka.Consumer.message =
   ; value = Some (Bytes.of_string "x"); timestamp = None; headers = [] }
 
 let test_ops_after_close_return_destroy () =
-  Eio_main.run @@ fun _env ->
+  Eio_main.run @@ fun env ->
     Eio.Switch.run @@ fun sw ->
-      match Kafka.Consumer.create unreachable_config ~sw with
+      match Kafka.Consumer.create ~clock:env#clock unreachable_config ~sw with
       | Error e -> Alcotest.failf "create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
         Kafka.Consumer.close consumer;
@@ -47,7 +47,7 @@ let test_ops_after_close_return_destroy () =
 let test_blocked_consume_returns_destroy_on_close () =
   Eio_main.run @@ fun env ->
     Eio.Switch.run @@ fun sw ->
-      match Kafka.Consumer.create unreachable_config ~sw with
+      match Kafka.Consumer.create ~clock:env#clock unreachable_config ~sw with
       | Error e -> Alcotest.failf "create failed: %s" (Kafka.Error.to_string e)
       | Ok consumer ->
         let done_p, done_r = Eio.Promise.create () in

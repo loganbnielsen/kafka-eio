@@ -63,9 +63,24 @@ type t
 val create
   :  ?on_ready:(unit -> unit)
   -> ?on_poll_error:(int -> unit)
+  -> clock:_ Eio.Time.clock
   -> config
   -> sw:Eio.Switch.t
   -> (t, Kafka_error.t) result
+(** [clock] drives a periodic keepalive poll (every 3s, independent of
+    message/rebalance traffic): the event-driven fd wakeup this consumer's
+    background poll fiber otherwise relies on only fires for messages and
+    rebalance callbacks landing on librdkafka's consumer queue — routine
+    heartbeat traffic is handled entirely inside librdkafka's own
+    background thread and never touches that queue. Without a periodic
+    keepalive, a consumer with no messages in flight never calls
+    [rd_kafka_consumer_poll] at all during genuine idle periods, and
+    librdkafka's [max.poll.interval.ms] watchdog (which specifically
+    tracks "did the application poll," not "did a message arrive") kicks
+    it from its consumer group on a fixed cadence regardless of actual
+    throughput. Confirmed live against a real deployment before this
+    parameter existed: an idle consumer left its group every ~300s
+    (librdkafka's default interval), forever. *)
 
 (** [close t] releases the consumer. Single-message operations below return
     [Error Kafka_error.Destroy] once [close] has been called. Driving loops

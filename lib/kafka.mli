@@ -257,6 +257,7 @@ module Consumer : sig
   val create
     :  ?on_ready:(unit -> unit)
     -> ?on_poll_error:(int -> unit)
+    -> clock:_ Eio.Time.clock
     -> config
     -> sw:Eio.Switch.t
     -> (t, Error.t) result

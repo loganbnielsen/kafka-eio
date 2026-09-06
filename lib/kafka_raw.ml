@@ -55,15 +55,14 @@ external consumer_poll : kafka_handle -> int -> poll_result
   = "ocaml_rd_kafka_consumer_poll"
 
 (* Event-driven consumer polling: wait on a consumer-queue wake fd, then drain
-   rd_kafka_consume_queue with timeout 0. *)
+   with consumer_poll (timeout 0) -- consumer_poll reads from this same
+   queue, so the fd wakeup still applies, but also drives consumer-group
+   housekeeping that a raw rd_kafka_consume_queue read bypasses. *)
 external consumer_queue_events_enable : kafka_handle -> int -> unit
   = "ocaml_kafka_consumer_queue_events_enable"
 
 external consumer_queue_events_disable : kafka_handle -> unit
   = "ocaml_kafka_consumer_queue_events_disable"
-
-external consumer_queue_poll : kafka_handle -> int -> poll_result
-  = "ocaml_rd_kafka_consumer_queue_poll"
 
 external produce_v
   :  kafka_handle -> string -> int32 -> bytes option -> bytes option -> int64

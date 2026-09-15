@@ -293,9 +293,11 @@ module Consumer : sig
     base_delay_s : float;
     max_delay_s  : float;
     max_attempts : int;
+    jitter_ratio : float;
   }
 
   val default_retry : retry_policy
+  val backoff_s : rng:Random.State.t -> retry_policy -> int -> float
   val default_queue_capacity : int
 
   type 'e consume_error =

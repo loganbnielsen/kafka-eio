@@ -149,12 +149,29 @@ type retry_policy = {
   base_delay_s : float;
   (** Initial backoff in seconds; doubles on each consecutive failure. *)
   max_delay_s  : float;
-  (** Backoff cap. Default: [600.0] (10 minutes). *)
+  (** Backoff cap. Default: [600.0] (10 minutes). No policy-generated delay
+      ever exceeds this, even after jitter. *)
   max_attempts : int;
   (** Maximum attempts. Negative = retry indefinitely. Default: [-1]. *)
+  jitter_ratio : float;
+  (** Symmetric jitter applied to the raw exponential delay before the
+      [max_delay_s] clamp, as a fraction of that delay (e.g. [0.1] = ±10%).
+      [0.0] disables jitter. Default: [0.1]. *)
 }
 
 val default_retry : retry_policy
+
+(** [backoff_s ~rng policy attempt] is the delay before retry attempt
+    [attempt] (1-based): [base_delay_s * 2^(attempt - 1)], jittered by
+    [±jitter_ratio] and then clamped to [\[0.0, max_delay_s\]] — jitter is
+    applied before the clamp, so a raw delay within [jitter_ratio] of the cap
+    can only jitter downward once clamped, and the invariant "no
+    policy-generated delay exceeds [max_delay_s]" always holds exactly.
+    [rng] is caller-supplied so callers (and tests) control determinism
+    directly, rather than relying on the global [Random] module. Exposed for
+    direct testing of the schedule's shape (monotonic growth pre-cap, the
+    cap itself, non-negativity) independent of a live consume loop. *)
+val backoff_s : rng:Random.State.t -> retry_policy -> int -> float
 
 val default_queue_capacity : int
 (** [16]. Default bound for each partition's in-memory message queue in

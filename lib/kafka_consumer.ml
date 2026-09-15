@@ -334,13 +334,32 @@ type retry_policy = {
   base_delay_s : float;
   max_delay_s  : float;
   max_attempts : int;
+  jitter_ratio : float;
 }
 
 let default_retry = {
   base_delay_s = 1.0;
   max_delay_s  = 600.0;
   max_attempts = -1;
+  jitter_ratio = 0.1;
 }
+
+(* Self-seeded, never the bare global Random module (this repo's callers have
+   been bitten by unseeded-global-Random jitter before). Mutex-protected
+   because Random.State.t mutation is not domain-safe and this state is
+   shared across every partition fiber's retry sleep. *)
+let default_rng = Random.State.make_self_init ()
+let default_rng_mutex = Mutex.create ()
+
+let backoff_s ~rng policy attempt =
+  let raw = policy.base_delay_s *. (2. ** Float.of_int (attempt - 1)) in
+  if policy.jitter_ratio <= 0.0
+  then Float.min policy.max_delay_s (Float.max 0.0 raw)
+  else (
+    let jitter_unit = Random.State.float rng (2.0 *. policy.jitter_ratio) in
+    let jittered = raw *. (1.0 +. (jitter_unit -. policy.jitter_ratio)) in
+    Float.min policy.max_delay_s (Float.max 0.0 jittered))
+;;
 
 let default_queue_capacity = 16
 
@@ -443,9 +462,10 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
                       loop () (* see the Stop case above — must drain, not exit *)
                     end else begin
                       let delay =
-                        Float.min
-                          (retry.base_delay_s *. (2. ** Float.of_int n))
-                          retry.max_delay_s
+                        Mutex.lock default_rng_mutex;
+                        Fun.protect
+                          ~finally:(fun () -> Mutex.unlock default_rng_mutex)
+                          (fun () -> backoff_s ~rng:default_rng retry (n + 1))
                       in
                       on_warning
                         (Printf.sprintf

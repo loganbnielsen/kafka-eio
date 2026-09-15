@@ -1,5 +1,19 @@
 # Changes
 
+## 0.3.0
+
+- **Behavior change**: `Kafka.Consumer.retry_policy` gains a `jitter_ratio`
+  field (default `0.1`). `consume_partitioned`'s retry backoff is now
+  jittered (`±jitter_ratio` of the raw exponential delay, applied before the
+  `max_delay_s` clamp) instead of the previous fully deterministic
+  `min(base_delay_s * 2^n, max_delay_s)` schedule. Existing callers that
+  construct `retry_policy` by record literal must add `jitter_ratio` (`0.0`
+  reproduces the old unjittered behavior exactly).
+- Exposed `Kafka.Consumer.backoff_s : rng:Random.State.t -> retry_policy ->
+  int -> float`, the pure backoff computation `consume_partitioned` uses
+  internally, so callers can test retry-schedule shape (bounds,
+  determinism) without a live consume loop or the global `Random` module.
+
 ## 0.2.0
 
 - Public modules now ship as one `kafka-eio` library. The raw librdkafka FFI

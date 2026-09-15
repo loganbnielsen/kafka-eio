@@ -316,7 +316,7 @@ let test_consume_partitioned_stop_does_not_hang () =
             Kafka.Consumer.Stop
         in
         let retry : Kafka.Consumer.retry_policy =
-          { base_delay_s = 1.0; max_delay_s = 1.0; max_attempts = 3 }
+          { base_delay_s = 1.0; max_delay_s = 1.0; max_attempts = 3; jitter_ratio = 0.0 }
         in
         let result =
           Eio.Time.with_timeout env#clock 20.0 (fun () ->
@@ -372,7 +372,7 @@ let test_consume_partitioned_max_attempts_counts_total_executions () =
         let calls = ref 0 in
         let retries = ref 0 in
         let retry : Kafka.Consumer.retry_policy =
-          { base_delay_s = 0.0; max_delay_s = 0.0; max_attempts = 1 }
+          { base_delay_s = 0.0; max_delay_s = 0.0; max_attempts = 1; jitter_ratio = 0.0 }
         in
         let result =
           Eio.Time.with_timeout_exn env#clock 10.0 (fun () ->

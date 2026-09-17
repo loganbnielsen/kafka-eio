@@ -126,12 +126,17 @@ val assignment_count  : kafka_handle -> int
     Fast local query — does not block or call the broker. *)
 val assignment : kafka_handle -> (string * int32) list
 
-(** [create_topic handle ~topic_name ~partitions ~replication_factor]
+(** [create_topic handle ~topic_name ~partitions ~replication_factor ~config]
     creates a topic via librdkafka's admin API on an existing handle.
     Releases the OCaml domain lock while awaiting the broker response.
-    Returns 0 on success; treats TOPIC_ALREADY_EXISTS as success.
-    Returns a non-zero librdkafka error code on failure. *)
-val create_topic : kafka_handle -> topic_name:string -> partitions:int -> replication_factor:int -> int
+    Returns 0 on success or a non-zero librdkafka error code on failure. *)
+val create_topic
+  : kafka_handle
+  -> topic_name:string
+  -> partitions:int
+  -> replication_factor:int
+  -> config:(string * string) list
+  -> int
 
 (** Commit one explicit offset. Committed offset is [offset + 1] (the next
     offset to fetch), matching Kafka's own convention. *)

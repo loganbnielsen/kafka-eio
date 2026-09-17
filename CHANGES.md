@@ -1,5 +1,13 @@
 # Changes
 
+## Unreleased
+
+- Add typed `Kafka.Producer.topic_config` and `create_topic_with_config` for
+  `min.insync.replicas`.
+  Unlike the legacy idempotent `create_topic`, it returns
+  `Topic_already_exists` rather than claiming configuration was applied to an
+  existing topic.
+
 ## 0.3.0
 
 - **Behavior change**: `Kafka.Consumer.retry_policy` gains a `jitter_ratio`

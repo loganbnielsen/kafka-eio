@@ -4,6 +4,60 @@
 
 let test_topic = "sun-producer-test"
 
+let test_create_topic_forwards_config () =
+  Eio_main.run @@ fun _ ->
+    Eio.Switch.run @@ fun sw ->
+      match Kafka.Producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
+      | Error e -> Alcotest.failf "create failed: %s" (Kafka.Error.to_string e)
+      | Ok producer ->
+        let topic = Printf.sprintf "kafka-eio-config-%d" (Unix.getpid ()) in
+        (match
+           Kafka.Producer.create_topic_with_config
+             producer
+             ~topic_name:topic
+             ~partitions:1
+             ~config:{ min_insync_replicas = 1 }
+             ~replication_factor:1
+         with
+         | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka.Error.to_string e)
+         | Ok () -> ());
+        (match
+           Kafka.Producer.create_topic_with_config
+             producer
+             ~topic_name:(topic ^ "-bad-min-isr")
+             ~partitions:1
+             ~config:{ min_insync_replicas = 2 }
+             ~replication_factor:1
+         with
+         | Error Kafka.Error.Invalid_arg -> ()
+         | Error e ->
+           Alcotest.failf "expected Invalid_arg, got %s" (Kafka.Error.to_string e)
+         | Ok () -> Alcotest.fail "invalid min_insync_replicas unexpectedly succeeded");
+        (match
+           Kafka.Producer.create_topic_with_config
+             producer
+             ~topic_name:(topic ^ "-invalid")
+             ~partitions:0
+             ~config:{ min_insync_replicas = 1 }
+             ~replication_factor:1
+         with
+         | Error _ -> ()
+         | Ok () -> Alcotest.fail "invalid partition count unexpectedly succeeded");
+        (match
+           Kafka.Producer.create_topic_with_config
+             producer
+             ~topic_name:topic
+             ~partitions:1
+             ~config:{ min_insync_replicas = 1 }
+             ~replication_factor:1
+         with
+         | Error Kafka.Error.Topic_already_exists -> ()
+         | Error e ->
+           Alcotest.failf "expected Topic_already_exists, got %s" (Kafka.Error.to_string e)
+         | Ok () -> Alcotest.fail "configured create masked an existing topic");
+        Kafka.Producer.close producer
+;;
+
 let test_produce_fire_and_forget () =
   Eio_main.run @@ fun _ ->
     Eio.Switch.run @@ fun sw ->
@@ -275,6 +329,7 @@ let () =
   let open Alcotest in
   run "kafka_producer_integration" [
     "produce", [
+      test_case "create_topic forwards config" `Slow test_create_topic_forwards_config;
       test_case "fire-and-forget" `Slow test_produce_fire_and_forget;
       test_case "produce_await"   `Slow test_produce_await;
       test_case "with key"        `Slow test_produce_with_key;

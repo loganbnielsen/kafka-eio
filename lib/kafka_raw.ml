@@ -79,10 +79,11 @@ external assignment_count : kafka_handle -> int
 external assignment : kafka_handle -> (string * int32) list
   = "ocaml_rd_kafka_assignment"
 
-external create_topic_raw : kafka_handle -> string -> int -> int -> int
+external create_topic_raw
+  : kafka_handle -> string -> int -> int -> (string * string) list -> int
   = "ocaml_rd_kafka_create_topic"
-let create_topic h ~topic_name ~partitions ~replication_factor =
-  create_topic_raw h topic_name partitions replication_factor
+let create_topic h ~topic_name ~partitions ~replication_factor ~config =
+  create_topic_raw h topic_name partitions replication_factor config
 
 external commit_message_raw
   :  kafka_handle -> string -> int32 -> int64 -> bool

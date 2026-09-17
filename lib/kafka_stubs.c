@@ -696,12 +696,12 @@ CAMLprim value ocaml_rd_kafka_assignment(value handle_v) {
 
 /* Creates a topic using librdkafka's built-in admin API on an existing
    producer handle. Releases the OCaml domain lock while polling for the
-   broker response. Returns 0 on success (treating TOPIC_ALREADY_EXISTS as
-   success), or a librdkafka error code on failure. */
+   broker response. Returns 0 on success or a librdkafka error code on failure. */
 CAMLprim value ocaml_rd_kafka_create_topic(value handle_v, value topic_v,
-                                            value partitions_v, value replicas_v)
+                                            value partitions_v, value replicas_v,
+                                            value config_v)
 {
-  CAMLparam4(handle_v, topic_v, partitions_v, replicas_v);
+  CAMLparam5(handle_v, topic_v, partitions_v, replicas_v, config_v);
   rd_kafka_t *rk = *((rd_kafka_t **)Data_custom_val(handle_v));
   int partitions = Int_val(partitions_v);
   int replicas   = Int_val(replicas_v);
@@ -714,17 +714,26 @@ CAMLprim value ocaml_rd_kafka_create_topic(value handle_v, value topic_v,
   }
   memcpy(topic_copy, String_val(topic_v), topic_len + 1);
 
-  caml_release_runtime_system();
-
   char errstr[512];
   rd_kafka_NewTopic_t *new_topic =
     rd_kafka_NewTopic_new(topic_copy, partitions, replicas, errstr, sizeof(errstr));
   free(topic_copy);
 
   if (!new_topic) {
-    caml_acquire_runtime_system();
     CAMLreturn(Val_int(RD_KAFKA_RESP_ERR__INVALID_ARG));
   }
+
+  for (value list = config_v; list != Val_emptylist; list = Field(list, 1)) {
+    value pair = Field(list, 0);
+    rd_kafka_resp_err_t config_err = rd_kafka_NewTopic_set_config(
+      new_topic, String_val(Field(pair, 0)), String_val(Field(pair, 1)));
+    if (config_err != RD_KAFKA_RESP_ERR_NO_ERROR) {
+      rd_kafka_NewTopic_destroy(new_topic);
+      CAMLreturn(Val_int(config_err));
+    }
+  }
+
+  caml_release_runtime_system();
 
   rd_kafka_AdminOptions_t *options =
     rd_kafka_AdminOptions_new(rk, RD_KAFKA_ADMIN_OP_CREATETOPICS);
@@ -736,18 +745,18 @@ CAMLprim value ocaml_rd_kafka_create_topic(value handle_v, value topic_v,
 
   int err_code = RD_KAFKA_RESP_ERR__TIMED_OUT;
   if (event) {
-    const rd_kafka_CreateTopics_result_t *result =
-      rd_kafka_event_CreateTopics_result(event);
-    if (result) {
-      size_t result_cnt = 0;
-      const rd_kafka_topic_result_t **results =
-        rd_kafka_CreateTopics_result_topics(result, &result_cnt);
-      if (results && result_cnt > 0) {
-        err_code = rd_kafka_topic_result_error(results[0]);
-        if (err_code == RD_KAFKA_RESP_ERR_TOPIC_ALREADY_EXISTS)
-          err_code = 0;
-      } else {
-        err_code = 0;
+    err_code = rd_kafka_event_error(event);
+    if (err_code == RD_KAFKA_RESP_ERR_NO_ERROR) {
+      const rd_kafka_CreateTopics_result_t *result =
+        rd_kafka_event_CreateTopics_result(event);
+      if (result) {
+        size_t result_cnt = 0;
+        const rd_kafka_topic_result_t **results =
+          rd_kafka_CreateTopics_result_topics(result, &result_cnt);
+        if (results && result_cnt > 0)
+          err_code = rd_kafka_topic_result_error(results[0]);
+        else
+          err_code = RD_KAFKA_RESP_ERR__FAIL;
       }
     }
     rd_kafka_event_destroy(event);

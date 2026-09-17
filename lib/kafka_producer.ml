@@ -339,12 +339,38 @@ let produce_await t ~topic ~value ?key ?(headers = []) () =
     promise
   end
 
+type topic_config = { min_insync_replicas : int }
+
+let create_topic_with_config t ~topic_name ~partitions ~replication_factor ~config =
+  let raw_config =
+    if replication_factor > 0
+       && config.min_insync_replicas > 0
+       && config.min_insync_replicas <= replication_factor
+    then Ok [ "min.insync.replicas", string_of_int config.min_insync_replicas ]
+    else Error Kafka_error.Invalid_arg
+  in
+  if is_closed t then Error Kafka_error.Destroy
+  else
+    match raw_config with
+    | Error _ as error -> error
+    | Ok config ->
+      (match
+         Kafka_raw.create_topic t.handle ~topic_name ~partitions ~replication_factor ~config
+       with
+       | 0 -> Ok ()
+       | i -> err i)
+
 let create_topic t ~topic_name ~partitions ~replication_factor =
   if is_closed t then Error Kafka_error.Destroy
   else
-    match Kafka_raw.create_topic t.handle ~topic_name ~partitions ~replication_factor with
+    match
+      Kafka_raw.create_topic t.handle ~topic_name ~partitions ~replication_factor ~config:[]
+    with
     | 0 -> Ok ()
-    | i -> err i
+    | i ->
+      (match err i with
+       | Error Kafka_error.Topic_already_exists -> Ok ()
+       | result -> result)
 
 let flush t ~timeout_ms =
   if is_closed t then Error Kafka_error.Destroy

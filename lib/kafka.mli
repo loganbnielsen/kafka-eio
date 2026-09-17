@@ -333,7 +333,7 @@ module Producer : sig
 
   type t
 
-  type topic_config = { min_insync_replicas : int option }
+  type topic_config = { min_insync_replicas : int }
 
   val create : config -> sw:Eio.Switch.t -> (t, Error.t) result
   val close : t -> unit

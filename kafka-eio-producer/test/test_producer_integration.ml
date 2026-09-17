@@ -16,7 +16,7 @@ let test_create_topic_forwards_config () =
              producer
              ~topic_name:topic
              ~partitions:1
-             ~config:{ min_insync_replicas = Some 1 }
+             ~config:{ min_insync_replicas = 1 }
              ~replication_factor:1
          with
          | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka.Error.to_string e)
@@ -26,7 +26,7 @@ let test_create_topic_forwards_config () =
              producer
              ~topic_name:(topic ^ "-bad-min-isr")
              ~partitions:1
-             ~config:{ min_insync_replicas = Some 2 }
+             ~config:{ min_insync_replicas = 2 }
              ~replication_factor:1
          with
          | Error Kafka.Error.Invalid_arg -> ()
@@ -38,7 +38,7 @@ let test_create_topic_forwards_config () =
              producer
              ~topic_name:(topic ^ "-invalid")
              ~partitions:0
-             ~config:{ min_insync_replicas = None }
+             ~config:{ min_insync_replicas = 1 }
              ~replication_factor:1
          with
          | Error _ -> ()
@@ -48,7 +48,7 @@ let test_create_topic_forwards_config () =
              producer
              ~topic_name:topic
              ~partitions:1
-             ~config:{ min_insync_replicas = Some 1 }
+             ~config:{ min_insync_replicas = 1 }
              ~replication_factor:1
          with
          | Error Kafka.Error.Topic_already_exists -> ()

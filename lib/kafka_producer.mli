@@ -34,7 +34,7 @@ val create : config -> sw:Eio.Switch.t -> (t, Kafka_error.t) result
     cannot hang forever past shutdown. *)
 val close : t -> unit
 
-type topic_config = { min_insync_replicas : int option }
+type topic_config = { min_insync_replicas : int }
 
 (** [create_topic_with_config t ~topic_name ~partitions ~replication_factor ~config]
     creates a

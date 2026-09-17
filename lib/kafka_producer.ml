@@ -343,7 +343,9 @@ type topic_config = { min_insync_replicas : int }
 
 let create_topic_with_config t ~topic_name ~partitions ~replication_factor ~config =
   let raw_config =
-    if config.min_insync_replicas > 0 && config.min_insync_replicas <= replication_factor
+    if replication_factor > 0
+       && config.min_insync_replicas > 0
+       && config.min_insync_replicas <= replication_factor
     then Ok [ "min.insync.replicas", string_of_int config.min_insync_replicas ]
     else Error Kafka_error.Invalid_arg
   in

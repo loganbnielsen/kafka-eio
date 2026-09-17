@@ -39,8 +39,8 @@ type topic_config = { min_insync_replicas : int }
 (** [create_topic_with_config t ~topic_name ~partitions ~replication_factor ~config]
     creates a
     topic via librdkafka's admin API, reusing this producer's handle.
-    [min_insync_replicas] must be positive and no greater than
-    [replication_factor]. Returns [Topic_already_exists] rather than claiming
+    [replication_factor] must be positive, and [min_insync_replicas] must be
+    positive and no greater than it. Returns [Topic_already_exists] rather than claiming
     the requested configuration was applied to an existing topic. *)
 val create_topic_with_config
   :  t

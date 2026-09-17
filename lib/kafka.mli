@@ -256,11 +256,21 @@ module Consumer : sig
 
   val create
     :  ?on_ready:(unit -> unit)
+    -> ?on_assigned:(unit -> unit)
+    -> ?on_revoked:(unit -> unit)
+    -> ?on_poll:(unit -> unit)
     -> ?on_poll_error:(int -> unit)
     -> clock:_ Eio.Time.clock
     -> config
     -> sw:Eio.Switch.t
     -> (t, Error.t) result
+  (** Lifecycle/progress observations for callers that model readiness and
+      liveness themselves. [on_assigned]/[on_revoked] fire on assignment
+      transitions (a non-empty to different-non-empty rebalance fires
+      [on_revoked] then [on_assigned]); [on_poll] fires after every successful
+      poll, message or not; [on_ready] is the compatibility one-shot on the
+      first assignment. This library carries no policy about what those
+      observations mean. *)
 
   val close : t -> unit
   val fetch : t -> (message, Error.t) result

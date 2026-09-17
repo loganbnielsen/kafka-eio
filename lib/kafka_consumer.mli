@@ -52,16 +52,31 @@ type message = {
     [fetch]/[poll]/[stream] while one of them is running. *)
 type t
 
-(** [create ?on_ready ?on_poll_error cfg ~sw] creates a consumer, subscribes
+(** [create ?on_ready ?on_assigned ?on_revoked ?on_poll ?on_poll_error cfg ~sw]
+    creates a consumer, subscribes
     to configured topics, and starts a poll fiber in [sw]. [on_ready] fires
     once when the broker assigns partitions — use it instead of sleeping for
     a fixed rebalance timeout. [on_poll_error] receives a raw librdkafka
     error code for any message-level poll error other than end-of-partition
     (which is not an error); without it such errors are indistinguishable
     from "no message available", letting a dead/unauthorized consumer spin
-    forever unnoticed. Defaults to logging to stderr. *)
+    forever unnoticed. Defaults to logging to stderr.
+
+    Lifecycle observations for callers that model readiness and liveness
+    themselves (this library deliberately carries no policy): [on_assigned]
+    fires whenever the assignment becomes non-empty (the first assignment, and
+    again after a rebalance that returns it); [on_revoked] fires whenever a
+    non-empty assignment is lost, including the non-empty to different-non-empty
+    rebalance transition (which fires [on_revoked] then [on_assigned] in that
+    order); [on_poll] fires after every successful poll, whether or not it
+    produced a message, and is the poll cadence a liveness signal should be
+    derived from; [on_ready] is the compatibility one-shot (fires once on the
+    first assignment). *)
 val create
   :  ?on_ready:(unit -> unit)
+  -> ?on_assigned:(unit -> unit)
+  -> ?on_revoked:(unit -> unit)
+  -> ?on_poll:(unit -> unit)
   -> ?on_poll_error:(int -> unit)
   -> clock:_ Eio.Time.clock
   -> config

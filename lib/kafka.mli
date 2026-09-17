@@ -333,8 +333,18 @@ module Producer : sig
 
   type t
 
+  type topic_config = { min_insync_replicas : int option }
+
   val create : config -> sw:Eio.Switch.t -> (t, Error.t) result
   val close : t -> unit
+
+  val create_topic_with_config
+    :  t
+    -> topic_name:string
+    -> partitions:int
+    -> replication_factor:int
+    -> config:topic_config
+    -> (unit, Error.t) result
 
   val create_topic
     :  t

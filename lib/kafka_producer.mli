@@ -34,9 +34,23 @@ val create : config -> sw:Eio.Switch.t -> (t, Kafka_error.t) result
     cannot hang forever past shutdown. *)
 val close : t -> unit
 
-(** [create_topic t ~topic_name ~partitions ~replication_factor] creates a
+type topic_config = { min_insync_replicas : int option }
+
+(** [create_topic_with_config t ~topic_name ~partitions ~replication_factor ~config]
+    creates a
     topic via librdkafka's admin API, reusing this producer's handle.
-    Treats an already-existing topic as success. *)
+    [min_insync_replicas] must be positive and no greater than
+    [replication_factor]. Returns [Topic_already_exists] rather than claiming
+    the requested configuration was applied to an existing topic. *)
+val create_topic_with_config
+  :  t
+  -> topic_name:string
+  -> partitions:int
+  -> replication_factor:int
+  -> config:topic_config
+  -> (unit, Kafka_error.t) result
+
+(** Create a topic with broker defaults. *)
 val create_topic
   :  t
   -> topic_name:string

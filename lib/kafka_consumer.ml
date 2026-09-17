@@ -96,7 +96,7 @@ let keepalive_interval_s = 3.0
 
 (* Eio fibers must not sit in blocking C polls. Like the producer, watch a
    librdkafka queue with an fd and drain it with timeout 0 after wakeup. *)
-let poll_fiber t sw ~clock ~on_ready ~on_poll_error =
+let poll_fiber t sw ~clock ~on_ready ~on_assigned ~on_revoked ~on_poll ~on_poll_error =
   let wake_source = t.wake_source and wake_sink = t.wake_sink in
   let write_fd_int =
     Eio_unix.Fd.use_exn "kafka_consumer_queue_wake_fd"
@@ -113,6 +113,19 @@ let poll_fiber t sw ~clock ~on_ready ~on_poll_error =
        be tracked per wake instead of by fixed-period polling. *)
     let rec drain () =
       let assignment = Kafka_raw.assignment t.handle |> List.sort compare in
+      (* Assignment lifecycle (KAFKA-EIO availability observations): report the
+         transitions the caller needs to model readiness. The very first
+         non-empty assignment counts as [on_assigned]; leaving a non-empty
+         assignment for an empty one (or a different one) is a revocation. *)
+      let prev = Option.value ~default:[] !prev_assignment in
+      let prev_nonempty = prev <> [] in
+      let now_nonempty = assignment <> [] in
+      if prev_nonempty && not now_nonempty then on_revoked ()
+      else if (not prev_nonempty) && now_nonempty then on_assigned ()
+      else if prev_nonempty && now_nonempty && prev <> assignment then begin
+        on_revoked ();
+        on_assigned ()
+      end;
       if Some assignment <> !prev_assignment then begin
         if Option.is_some !prev_assignment then Hashtbl.reset t.last_processed;
         prev_assignment := Some assignment
@@ -121,9 +134,10 @@ let poll_fiber t sw ~clock ~on_ready ~on_poll_error =
         notified := true; on_ready ()
       end;
       match Kafka_raw.consumer_poll t.handle 0 with
-      | Kafka_raw.Timeout -> ()
+      | Kafka_raw.Timeout -> on_poll ()
       | Kafka_raw.Msg tup ->
         if not !notified then begin notified := true; on_ready () end;
+        on_poll ();
         Eio.Stream.add t.stream (tuple_to_message tup);
         drain ()
       | Kafka_raw.Poll_error code ->
@@ -189,7 +203,16 @@ let default_on_poll_error code =
   Printf.eprintf "kafka-eio: consumer poll error: %s\n%!"
     (Kafka_error.to_string (Kafka_error.of_int code))
 
-let create ?(on_ready = ignore) ?(on_poll_error = default_on_poll_error) ~clock (cfg : config) ~sw =
+let create
+      ?(on_ready = ignore)
+      ?(on_assigned = ignore)
+      ?(on_revoked = ignore)
+      ?(on_poll = ignore)
+      ?(on_poll_error = default_on_poll_error)
+      ~clock
+      (cfg : config)
+      ~sw
+  =
   match conf_of_config cfg with
   | Error msg -> Result.error (Kafka_error.Config_error msg)
   | Ok conf ->
@@ -218,7 +241,15 @@ let create ?(on_ready = ignore) ?(on_poll_error = default_on_poll_error) ~clock 
          poll_exit_r;
          last_processed = Hashtbl.create 4;
        } in
-       poll_fiber t sw ~clock ~on_ready ~on_poll_error;
+       poll_fiber
+         t
+         sw
+         ~clock
+         ~on_ready
+         ~on_assigned
+         ~on_revoked
+         ~on_poll
+         ~on_poll_error;
        Eio.Switch.on_release sw (fun () -> close t);
        Result.ok t)
 

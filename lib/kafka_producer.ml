@@ -47,7 +47,7 @@ type t = {
 let err i = Error (Kafka_error.of_int i)
 
 let conf_of_config (cfg : config) : (Kafka_raw.kafka_conf, string) result =
-  let ( let* ) = Result.bind in
+  let open Result.Syntax in
   let conf = Kafka_raw.conf_new () in
   let set k v =
     Kafka_raw.conf_set conf k v

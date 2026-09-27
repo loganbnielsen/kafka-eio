@@ -69,7 +69,7 @@ let required_env name =
   | None       -> Error ("kafka security: " ^ name ^ " required for SASL protocols")
 
 let sasl_of_env () =
-  let ( let* ) = Result.bind in
+  let open Result.Syntax in
   let* mechanism_raw = required_env "KAFKA_SASL_MECHANISM" in
   let* mechanism     = mechanism_of_string mechanism_raw in
   let* username      = required_env "KAFKA_SASL_USERNAME" in
@@ -77,7 +77,7 @@ let sasl_of_env () =
   Ok { mechanism; username; password }
 
 let of_env () =
-  let ( let* ) = Result.bind in
+  let open Result.Syntax in
   let* protocol =
     match env_opt "KAFKA_SECURITY_PROTOCOL" with
     | None       -> Ok `Plaintext

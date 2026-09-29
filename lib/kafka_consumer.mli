@@ -52,15 +52,40 @@ type message = {
     [fetch]/[poll]/[stream] while one of them is running. *)
 type t
 
-(** [create ?on_ready ?on_assigned ?on_revoked ?on_poll ?on_poll_error cfg ~sw]
-    creates a consumer, subscribes
-    to configured topics, and starts a poll fiber in [sw]. [on_ready] fires
-    once when the broker assigns partitions — use it instead of sleeping for
-    a fixed rebalance timeout. [on_poll_error] receives a raw librdkafka
-    error code for any message-level poll error other than end-of-partition
-    (which is not an error); without it such errors are indistinguishable
-    from "no message available", letting a dead/unauthorized consumer spin
-    forever unnoticed. Defaults to logging to stderr.
+(** Every callback a consumer can observe, in one value: the lifecycle
+    observations ([on_ready], [on_assigned], [on_revoked], [on_poll],
+    [on_poll_error]) plus the loop's own sinks ([on_warning] for a poll or
+    rebalance warning, [on_retry] for one retry attempt). They are one value
+    because they travel together — a caller that models readiness already owns
+    the warning policy — and grouping them is what lets [create], [consume] and
+    [consume_partitioned] take one parameter instead of five separate optional
+    ones. Each entry point observes the fields it can and ignores the rest. *)
+type hooks =
+  { on_ready : unit -> unit
+  ; on_assigned : unit -> unit
+  ; on_revoked : unit -> unit
+  ; on_poll : unit -> unit
+  ; on_poll_error : int -> unit
+  ; on_warning : string -> unit
+  ; on_retry : partition:int32 -> attempt:int -> delay_s:float -> unit
+  }
+
+val default_hooks : hooks
+(** The policy this library shipped with, and the default for every entry
+    point: [on_ready], [on_assigned], [on_revoked], [on_poll] and [on_retry] do
+    nothing; [on_poll_error] and [on_warning] write one line to stderr. Override
+    the fields a caller cares about —
+    [{ default_hooks with on_assigned = fun () -> ready := true }]. *)
+
+(** [create ?hooks cfg ~sw] creates a consumer, subscribes
+    to configured topics, and starts a poll fiber in [sw]. [hooks.on_ready]
+    fires once when the broker assigns partitions — use it instead of sleeping
+    for a fixed rebalance timeout. [hooks.on_poll_error] receives a raw
+    librdkafka error code for any message-level poll error other than
+    end-of-partition (which is not an error); without it such errors are
+    indistinguishable from "no message available", letting a dead/unauthorized
+    consumer spin forever unnoticed. Defaults to {!default_hooks}, which logs
+    that one to stderr.
 
     Lifecycle observations for callers that model readiness and liveness
     themselves (this library deliberately carries no policy): [on_assigned]
@@ -73,11 +98,7 @@ type t
     derived from; [on_ready] is the compatibility one-shot (fires once on the
     first assignment). *)
 val create
-  :  ?on_ready:(unit -> unit)
-  -> ?on_assigned:(unit -> unit)
-  -> ?on_revoked:(unit -> unit)
-  -> ?on_poll:(unit -> unit)
-  -> ?on_poll_error:(int -> unit)
+  :  ?hooks:hooks
   -> clock:_ Eio.Time.clock
   -> config
   -> sw:Eio.Switch.t
@@ -121,14 +142,15 @@ val fetch : t -> (message, Kafka_error.t) result
 
 (** Process messages in a loop. [ack ()] commits the offset for the current
     message and returns the result of that commit — a synchronous librdkafka
-    call that can itself fail. [on_warning] receives a human-readable message
-    for API-misuse/operational events (e.g. a handler returning without
-    calling [ack ()]); defaults to writing to stderr prefixed [kafka-eio: ].
+    call that can itself fail. [hooks.on_warning] receives a human-readable
+    message for API-misuse/operational events (e.g. a handler returning without
+    calling [ack ()]); {!default_hooks} writes it to stderr prefixed
+    [kafka-eio: ].
     Returns [Ok ()] when [handler] returns [Stop] or [t] is closed,
     [Error e] when [handler] returns [Error e]. *)
 val consume
   :  t
-  -> ?on_warning:(string -> unit)
+  -> ?hooks:hooks
   -> ?stop:unit Eio.Promise.t
   -> handler:(message -> ack:(unit -> (unit, Kafka_error.t) result) -> 'e handler_result)
   -> unit
@@ -199,8 +221,8 @@ type 'e consume_error =
 (** Result error for [consume_partitioned]: either exhausted handler errors by
     partition, or invalid consumer-loop configuration rejected before polling. *)
 
-(** [consume_partitioned t ~sw ~clock ?retry ?on_retry ?on_warning
-    ?queue_capacity ~handler] is like [consume] but routes each message to a
+(** [consume_partitioned t ~sw ~clock ?retry ?hooks ?queue_capacity ~handler]
+    is like [consume] but routes each message to a
     dedicated per-partition fiber, so retry backoff on one partition doesn't
     block others. During retry sleep the partition is paused at the
     librdkafka level so its stream doesn't accumulate messages.
@@ -215,9 +237,9 @@ type 'e consume_error =
     every other partition until it drains — a deliberate tradeoff for a
     hard memory bound over unbounded fiber growth. Must be positive.
 
-    [on_retry ~partition ~attempt ~delay_s] fires just before each retry
-    sleep. [on_warning] receives text for ack-misuse and retry/exhaustion
-    events; defaults to stderr.
+    [hooks.on_retry ~partition ~attempt ~delay_s] fires just before each retry
+    sleep, and [hooks.on_warning] receives text for ack-misuse and
+    retry/exhaustion events; {!default_hooks} reports the latter to stderr.
 
     Blocks until the consumer stops (handler returns [Stop] or retries are
     exhausted); all partition fibers are joined before returning, so [t] is
@@ -236,8 +258,7 @@ val consume_partitioned
   -> sw:Eio.Switch.t
   -> clock:_ Eio.Time.clock
   -> ?retry:retry_policy
-  -> ?on_retry:(partition:int32 -> attempt:int -> delay_s:float -> unit)
-  -> ?on_warning:(string -> unit)
+  -> ?hooks:hooks
   -> ?queue_capacity:int
   -> ?stop:unit Eio.Promise.t
   -> handler:(message -> ack:(unit -> (unit, Kafka_error.t) result) -> 'e handler_result)

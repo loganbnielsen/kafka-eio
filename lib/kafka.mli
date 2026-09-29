@@ -254,12 +254,20 @@ module Consumer : sig
 
   type t
 
+  type hooks =
+    { on_ready : unit -> unit
+    ; on_assigned : unit -> unit
+    ; on_revoked : unit -> unit
+    ; on_poll : unit -> unit
+    ; on_poll_error : int -> unit
+    ; on_warning : string -> unit
+    ; on_retry : partition:int32 -> attempt:int -> delay_s:float -> unit
+    }
+
+  val default_hooks : hooks
+
   val create
-    :  ?on_ready:(unit -> unit)
-    -> ?on_assigned:(unit -> unit)
-    -> ?on_revoked:(unit -> unit)
-    -> ?on_poll:(unit -> unit)
-    -> ?on_poll_error:(int -> unit)
+    :  ?hooks:hooks
     -> clock:_ Eio.Time.clock
     -> config
     -> sw:Eio.Switch.t
@@ -294,7 +302,7 @@ module Consumer : sig
       loop as [Ok ()]; handler errors are returned unchanged. *)
   val consume
     :  t
-    -> ?on_warning:(string -> unit)
+    -> ?hooks:hooks
     -> ?stop:unit Eio.Promise.t
     -> handler:(message -> ack:(unit -> (unit, Error.t) result) -> 'e handler_result)
     -> unit
@@ -320,8 +328,7 @@ module Consumer : sig
     -> sw:Eio.Switch.t
     -> clock:_ Eio.Time.clock
     -> ?retry:retry_policy
-    -> ?on_retry:(partition:int32 -> attempt:int -> delay_s:float -> unit)
-    -> ?on_warning:(string -> unit)
+    -> ?hooks:hooks
     -> ?queue_capacity:int
     -> ?stop:unit Eio.Promise.t
     -> handler:(message -> ack:(unit -> (unit, Error.t) result) -> 'e handler_result)

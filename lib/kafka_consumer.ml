@@ -56,6 +56,17 @@ let err i = Result.error (Kafka_error.of_int i)
 
 let default_on_warning msg = Printf.eprintf "kafka-eio: %s\n%!" msg
 
+type hooks =
+  { on_ready : unit -> unit
+  ; on_assigned : unit -> unit
+  ; on_revoked : unit -> unit
+  ; on_poll : unit -> unit
+  ; on_poll_error : int -> unit
+  ; on_warning : string -> unit
+  ; on_retry : partition:int32 -> attempt:int -> delay_s:float -> unit
+  }
+
+
 let conf_of_config (cfg : config) : (Kafka_raw.kafka_conf, string) result =
   let open Result.Syntax in
   let conf = Kafka_raw.conf_new () in
@@ -96,7 +107,7 @@ let keepalive_interval_s = 3.0
 
 (* Eio fibers must not sit in blocking C polls. Like the producer, watch a
    librdkafka queue with an fd and drain it with timeout 0 after wakeup. *)
-let poll_fiber t sw ~clock ~on_ready ~on_assigned ~on_revoked ~on_poll ~on_poll_error =
+let poll_fiber t sw ~clock ~hooks =
   let wake_source = t.wake_source and wake_sink = t.wake_sink in
   let write_fd_int =
     Eio_unix.Fd.use_exn "kafka_consumer_queue_wake_fd"
@@ -120,30 +131,30 @@ let poll_fiber t sw ~clock ~on_ready ~on_assigned ~on_revoked ~on_poll ~on_poll_
       let prev = Option.value ~default:[] !prev_assignment in
       let prev_nonempty = prev <> [] in
       let now_nonempty = assignment <> [] in
-      if prev_nonempty && not now_nonempty then on_revoked ()
-      else if (not prev_nonempty) && now_nonempty then on_assigned ()
+      if prev_nonempty && not now_nonempty then hooks.on_revoked ()
+      else if (not prev_nonempty) && now_nonempty then hooks.on_assigned ()
       else if prev_nonempty && now_nonempty && prev <> assignment then begin
-        on_revoked ();
-        on_assigned ()
+        hooks.on_revoked ();
+        hooks.on_assigned ()
       end;
       if Some assignment <> !prev_assignment then begin
         if Option.is_some !prev_assignment then Hashtbl.reset t.last_processed;
         prev_assignment := Some assignment
       end;
       if not !notified && assignment <> [] then begin
-        notified := true; on_ready ()
+        notified := true; hooks.on_ready ()
       end;
       match Kafka_raw.consumer_poll t.handle 0 with
-      | Kafka_raw.Timeout -> on_poll ()
+      | Kafka_raw.Timeout -> hooks.on_poll ()
       | Kafka_raw.Msg tup ->
-        if not !notified then begin notified := true; on_ready () end;
-        on_poll ();
+        if not !notified then begin notified := true; hooks.on_ready () end;
+        hooks.on_poll ();
         Eio.Stream.add t.stream (tuple_to_message tup);
         drain ()
       | Kafka_raw.Poll_error code ->
         (* Persistent poll errors can be immediately ready; yield to avoid
            turning an auth/config failure into a tight scheduler loop. *)
-        on_poll_error code;
+        hooks.on_poll_error code;
         Eio.Fiber.yield ();
         drain ()
     in
@@ -203,16 +214,17 @@ let default_on_poll_error code =
   Printf.eprintf "kafka-eio: consumer poll error: %s\n%!"
     (Kafka_error.to_string (Kafka_error.of_int code))
 
-let create
-      ?(on_ready = ignore)
-      ?(on_assigned = ignore)
-      ?(on_revoked = ignore)
-      ?(on_poll = ignore)
-      ?(on_poll_error = default_on_poll_error)
-      ~clock
-      (cfg : config)
-      ~sw
-  =
+let default_hooks =
+  { on_ready = ignore
+  ; on_assigned = ignore
+  ; on_revoked = ignore
+  ; on_poll = ignore
+  ; on_poll_error = default_on_poll_error
+  ; on_warning = default_on_warning
+  ; on_retry = (fun ~partition:_ ~attempt:_ ~delay_s:_ -> ())
+  }
+
+let create ?(hooks = default_hooks) ~clock (cfg : config) ~sw =
   match conf_of_config cfg with
   | Error msg -> Result.error (Kafka_error.Config_error msg)
   | Ok conf ->
@@ -241,15 +253,7 @@ let create
          poll_exit_r;
          last_processed = Hashtbl.create 4;
        } in
-       poll_fiber
-         t
-         sw
-         ~clock
-         ~on_ready
-         ~on_assigned
-         ~on_revoked
-         ~on_poll
-         ~on_poll_error;
+       poll_fiber t sw ~clock ~hooks;
        Eio.Switch.on_release sw (fun () -> close t);
        Result.ok t)
 
@@ -276,7 +280,7 @@ let fetch t =
   if is_closed t then Result.error Kafka_error.Destroy
   else Result.ok (Eio.Stream.take t.stream)
 
-let consume t ?(on_warning = default_on_warning) ?stop ~handler () =
+let consume t ?(hooks = default_hooks) ?stop ~handler () =
   let take_or_closed () =
     if is_closed t then None
     else
@@ -303,7 +307,7 @@ let consume t ?(on_warning = default_on_warning) ?stop ~handler () =
       let result = handler msg ~ack in
       (match result with
        | (Continue | Stop) when not !acked ->
-         on_warning
+         hooks.on_warning
            (Printf.sprintf
               "handler returned without calling ack() — offset not committed \
                (topic=%s partition=%ld offset=%Ld)"
@@ -416,8 +420,7 @@ type 'e consume_error =
    message was tried and reverted — it trades a bounded stall for unbounded
    fiber growth on a backed-up partition. *)
 let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
-    ?(on_retry = fun ~partition:_ ~attempt:_ ~delay_s:_ -> ())
-    ?(on_warning = default_on_warning)
+    ?(hooks = default_hooks)
     ?(queue_capacity = default_queue_capacity)
     ?stop
     ~handler () =
@@ -475,7 +478,7 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
                   match handler msg ~ack:tracked_ack with
                   | Continue ->
                     if not !acked then
-                      on_warning
+                      hooks.on_warning
                         (Printf.sprintf
                            "handler returned Continue without ack() \
                             (topic=%s partition=%ld offset=%Ld)"
@@ -483,7 +486,7 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
                     loop ()
                   | Stop ->
                     if not !acked then
-                      on_warning
+                      hooks.on_warning
                         (Printf.sprintf
                            "handler returned Stop without ack() \
                             (topic=%s partition=%ld offset=%Ld)"
@@ -499,7 +502,7 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
                       retry.max_attempts >= 0 && n + 1 >= retry.max_attempts
                     in
                     if exhausted then begin
-                      on_warning
+                      hooks.on_warning
                         (Printf.sprintf
                            "exhausted %d attempt(s) for topic=%s partition=%ld offset=%Ld"
                            (n + 1) msg.topic msg.partition msg.offset);
@@ -513,11 +516,11 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
                           ~finally:(fun () -> Mutex.unlock default_rng_mutex)
                           (fun () -> backoff_s ~rng:default_rng retry (n + 1))
                       in
-                      on_warning
+                      hooks.on_warning
                         (Printf.sprintf
                            "attempt %d failed, retrying in %.0fs (topic=%s partition=%ld offset=%Ld)"
                            (n + 1) delay msg.topic msg.partition msg.offset);
-                      on_retry ~partition:msg.partition ~attempt:(n + 1) ~delay_s:delay;
+                      hooks.on_retry ~partition:msg.partition ~attempt:(n + 1) ~delay_s:delay;
                       if not (is_closed t) then
                         Kafka_raw.pause_partition t.handle msg.topic msg.partition;
                       let interrupted =

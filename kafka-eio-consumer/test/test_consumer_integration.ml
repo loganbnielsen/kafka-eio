@@ -106,6 +106,48 @@ let test_fetch_api () =
    zero-length value at the consumer FFI boundary. Uses its own
    topic/group since the other tests here share test_topic with exact
    message-count assertions. *)
+let test_hooks_are_observed () =
+  Eio_main.run
+  @@ fun env ->
+  Eio.Switch.run
+  @@ fun sw ->
+  seed_messages sw 1;
+  let ready_p, ready_r = Eio.Promise.create () in
+  let assigned = ref 0 in
+  let polls = ref 0 in
+  let warnings = ref 0 in
+  let hooks =
+    { Kafka.Consumer.default_hooks with
+      on_ready =
+        (fun () ->
+           if not (Eio.Promise.is_resolved ready_p) then Eio.Promise.resolve ready_r ())
+    ; on_assigned = (fun () -> incr assigned)
+    ; on_poll = (fun () -> incr polls)
+    ; on_warning = (fun _ -> incr warnings)
+    }
+  in
+  match Kafka.Consumer.create ~hooks ~clock:env#clock (make_consumer_config ()) ~sw with
+  | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
+  | Ok consumer ->
+    (match Eio.Time.with_timeout env#clock 15.0 (fun () -> Eio.Promise.await ready_p; Ok ()) with
+     | Ok () -> ()
+     | Error `Timeout -> Alcotest.fail "timed out waiting for the first assignment");
+    Alcotest.(check bool) "on_assigned fired for the first assignment" true (!assigned >= 1);
+    Alcotest.(check bool) "on_poll fired for a successful poll" true (!polls >= 1);
+    (match
+       Kafka.Consumer.consume
+         consumer
+         ~hooks
+         ~handler:(fun _msg ~ack:_ -> Kafka.Consumer.Stop)
+         ()
+     with
+     | Ok () -> ()
+     | Error e -> Alcotest.failf "consume failed: %s" (Kafka.Error.to_string e));
+    Alcotest.(check bool)
+      "hooks.on_warning saw the handler that never acknowledged"
+      true
+      (!warnings >= 1)
+
 let test_tombstone () =
   Eio_main.run @@ fun env ->
     Eio.Switch.run @@ fun sw ->
@@ -378,7 +420,10 @@ let test_consume_partitioned_max_attempts_counts_total_executions () =
           Eio.Time.with_timeout_exn env#clock 10.0 (fun () ->
             Kafka.Consumer.consume_partitioned consumer ~sw ~clock:env#clock
               ~retry
-              ~on_retry:(fun ~partition:_ ~attempt:_ ~delay_s:_ -> incr retries)
+              ~hooks:
+                { Kafka.Consumer.default_hooks with
+                  on_retry = (fun ~partition:_ ~attempt:_ ~delay_s:_ -> incr retries)
+                }
               ~handler:(fun _msg ~ack:_ ->
                 incr calls;
                 Kafka.Consumer.Error "failed")
@@ -598,8 +643,13 @@ let test_commit_all_survives_rebalance () =
            partitions between c1 and c2. *)
         Eio.Switch.run (fun sw2 ->
           let c2_ready, c2_ready_r = Eio.Promise.create () in
-          match Kafka.Consumer.create ~clock:env#clock cfg ~sw:sw2 ~on_ready:(fun () ->
-                  Eio.Promise.resolve c2_ready_r ()) with
+          match
+            Kafka.Consumer.create ~clock:env#clock cfg ~sw:sw2
+              ~hooks:
+                { Kafka.Consumer.default_hooks with
+                  on_ready = (fun () -> Eio.Promise.resolve c2_ready_r ())
+                }
+          with
           | Error e -> Alcotest.failf "c2 create failed: %s" (Kafka.Error.to_string e)
           | Ok c2 ->
             (match Eio.Time.with_timeout env#clock 10.0 (fun () ->
@@ -800,6 +850,7 @@ let () =
       test_case "poll messages"    `Slow test_poll_messages;
       test_case "consume with ack" `Slow test_consume_with_ack;
       test_case "fetch api"        `Slow test_fetch_api;
+      test_case "hooks are observed" `Slow test_hooks_are_observed;
       test_case "tombstone stays distinct from empty value" `Slow test_tombstone;
       test_case "header with null value stays distinct from empty string" `Slow
         test_header_with_null_value;

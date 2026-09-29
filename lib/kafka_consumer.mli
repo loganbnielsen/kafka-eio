@@ -129,6 +129,7 @@ val fetch : t -> (message, Kafka_error.t) result
 val consume
   :  t
   -> ?on_warning:(string -> unit)
+  -> ?stop:unit Eio.Promise.t
   -> handler:(message -> ack:(unit -> (unit, Kafka_error.t) result) -> 'e handler_result)
   -> unit
   -> (unit, 'e) result
@@ -238,6 +239,7 @@ val consume_partitioned
   -> ?on_retry:(partition:int32 -> attempt:int -> delay_s:float -> unit)
   -> ?on_warning:(string -> unit)
   -> ?queue_capacity:int
+  -> ?stop:unit Eio.Promise.t
   -> handler:(message -> ack:(unit -> (unit, Kafka_error.t) result) -> 'e handler_result)
   -> unit
   -> (unit, 'e consume_error) result

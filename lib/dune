@@ -3,7 +3,6 @@
  (public_name kafka-eio)
  (wrapped false)
  (modules kafka kafka_consumer kafka_consumer_handle kafka_error kafka_producer kafka_raw kafka_security kafka_topic_name)
- (private_modules kafka_consumer kafka_consumer_handle kafka_error kafka_producer kafka_raw kafka_security kafka_topic_name)
  (libraries eio eio.unix unix cstruct)
  (foreign_stubs
   (language c)

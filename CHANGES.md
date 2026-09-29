@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **API change**: every module the library defines is now installed, and `Kafka`
+  is a set of aliases over them (`module Consumer = Kafka_consumer`, …) instead of
+  a hand-written facade. The facade copies could not be replaced by delegation
+  while the modules were private: a copied datatype declaration and `module type
+  of` both give a fresh type, and naming a private module from an installed
+  interface leaves consumers unable to resolve it. `Kafka_raw` (the librdkafka
+  binding layer) and `Kafka_consumer_handle` (the offset token a transactional
+  producer takes) are reachable now rather than mirrored.
+- **API change**: `Kafka.Producer.with_transaction`'s `?consumer_offsets` takes
+  `(Kafka.Consumer.handle consumer, offsets)` directly. The facade wrapper that
+  performed that conversion is gone.
+
 - Add typed `Kafka.Producer.topic_config` and `create_topic_with_config` for
   `min.insync.replicas`.
   Unlike the legacy idempotent `create_topic`, it returns

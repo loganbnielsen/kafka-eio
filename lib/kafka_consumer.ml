@@ -276,13 +276,19 @@ let fetch t =
   if is_closed t then Result.error Kafka_error.Destroy
   else Result.ok (Eio.Stream.take t.stream)
 
-let consume t ?(on_warning = default_on_warning) ~handler () =
+let consume t ?(on_warning = default_on_warning) ?stop ~handler () =
   let take_or_closed () =
     if is_closed t then None
     else
       Eio.Fiber.first
         (fun () -> Some (Eio.Stream.take t.stream))
-        (fun () -> Eio.Promise.await t.closed_p; None)
+        (match stop with
+         | None -> fun () -> Eio.Promise.await t.closed_p; None
+         | Some stop_p ->
+           fun () ->
+             Eio.Fiber.first
+               (fun () -> Eio.Promise.await t.closed_p; None)
+               (fun () -> Eio.Promise.await stop_p; None))
   in
   let rec loop () =
     match take_or_closed () with
@@ -413,10 +419,12 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
     ?(on_retry = fun ~partition:_ ~attempt:_ ~delay_s:_ -> ())
     ?(on_warning = default_on_warning)
     ?(queue_capacity = default_queue_capacity)
+    ?stop
     ~handler () =
   if queue_capacity <= 0 then
     Stdlib.Error (Invalid_config "queue_capacity must be positive")
   else
+  let stop_signal = stop in
   let stop    = Atomic.make false in
   let stop_p, stop_r = Eio.Promise.create () in
   let handler_errors = ref [] in
@@ -441,6 +449,13 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
       Eio.Promise.await t.closed_p;
       signal_stop ();
       `Stop_daemon);
+    (match stop_signal with
+     | None -> ()
+     | Some stop_p ->
+       Eio.Fiber.fork_daemon ~sw (fun () ->
+         Eio.Promise.await stop_p;
+         signal_stop ();
+         `Stop_daemon));
     let get_or_create_stream partition =
       match Hashtbl.find_opt streams partition with
       | Some s -> s

@@ -66,6 +66,51 @@ let test_blocked_consume_returns_destroy_on_close () =
         Alcotest.(check bool) "blocked consume returns Ok" true
           (match result with Ok () -> true | Error _ -> false)
 
+let test_idle_consume_wakes_on_stop () =
+  Eio_main.run @@ fun env ->
+    Eio.Switch.run @@ fun sw ->
+      match Kafka.Consumer.create ~clock:env#clock unreachable_config ~sw with
+      | Error e -> Alcotest.failf "create failed: %s" (Kafka.Error.to_string e)
+      | Ok consumer ->
+        let stop_p, stop_r = Eio.Promise.create () in
+        let handled = ref false in
+        Eio.Fiber.fork ~sw (fun () ->
+          Eio.Fiber.yield ();
+          Eio.Promise.resolve stop_r ());
+        let result =
+          Eio.Time.with_timeout_exn env#clock 2.0 (fun () ->
+            Kafka.Consumer.consume consumer ~stop:stop_p
+              ~handler:(fun _msg ~ack:_ ->
+                handled := true;
+                Kafka.Consumer.Continue)
+              ())
+        in
+        Alcotest.(check bool) "idle consume returns Ok on stop" true
+          (match result with Ok () -> true | Error _ -> false);
+        Alcotest.(check bool) "no message was handed to the handler" false !handled
+
+let test_consume_without_stop_still_blocks () =
+  Eio_main.run @@ fun env ->
+    Eio.Switch.run @@ fun sw ->
+      match Kafka.Consumer.create ~clock:env#clock unreachable_config ~sw with
+      | Error e -> Alcotest.failf "create failed: %s" (Kafka.Error.to_string e)
+      | Ok consumer ->
+        let done_p, done_r = Eio.Promise.create () in
+        Eio.Fiber.fork ~sw (fun () ->
+          Eio.Promise.resolve done_r
+            (Kafka.Consumer.consume consumer
+               ~handler:(fun _msg ~ack:_ -> Kafka.Consumer.Continue)
+               ()));
+        Eio.Fiber.yield ();
+        Eio.Fiber.yield ();
+        Alcotest.(check bool)
+          "an idle consume without a stop promise is still running"
+          true
+          (not (Eio.Promise.is_resolved done_p));
+        Kafka.Consumer.close consumer;
+        ignore
+          (Eio.Time.with_timeout_exn env#clock 1.0 (fun () -> Eio.Promise.await done_p))
+
 (* FEAT-078: retry_policy's shared backoff schedule -- bounded, non-negative,
    and deterministic given an injected rng (never the bare global Random
    module). *)
@@ -122,6 +167,10 @@ let () =
         test_ops_after_close_return_destroy;
       test_case "blocked consume returns Ok on close" `Quick
         test_blocked_consume_returns_destroy_on_close;
+      test_case "idle consume wakes on stop when no message arrives" `Quick
+        test_idle_consume_wakes_on_stop;
+      test_case "idle consume still blocks without a stop promise" `Quick
+        test_consume_without_stop_still_blocks;
     ];
     "backoff_s", [
       test_case "early attempt within jittered bounds" `Quick

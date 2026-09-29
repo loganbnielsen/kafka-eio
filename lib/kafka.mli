@@ -295,6 +295,7 @@ module Consumer : sig
   val consume
     :  t
     -> ?on_warning:(string -> unit)
+    -> ?stop:unit Eio.Promise.t
     -> handler:(message -> ack:(unit -> (unit, Error.t) result) -> 'e handler_result)
     -> unit
     -> (unit, 'e) result
@@ -322,6 +323,7 @@ module Consumer : sig
     -> ?on_retry:(partition:int32 -> attempt:int -> delay_s:float -> unit)
     -> ?on_warning:(string -> unit)
     -> ?queue_capacity:int
+    -> ?stop:unit Eio.Promise.t
     -> handler:(message -> ack:(unit -> (unit, Error.t) result) -> 'e handler_result)
     -> unit
     -> (unit, 'e consume_error) result

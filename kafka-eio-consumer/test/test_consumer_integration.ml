@@ -812,6 +812,10 @@ let test_pause_resume_partition () =
          | Some msg -> Alcotest.(check string) "seeded message arrives" "before-pause" (value_of msg)
          | None -> Alcotest.fail "expected the seeded message before pausing");
 
+        (match Kafka.Consumer.pause_partition consumer ~topic ~partition:999l with
+         | Error _ -> ()
+         | Ok () -> Alcotest.fail "pause_partition accepted an unassigned partition");
+
         (match Kafka.Consumer.pause_partition consumer ~topic ~partition:0l with
          | Error e -> Alcotest.failf "pause_partition failed: %s" (Kafka.Error.to_string e)
          | Ok () -> ());

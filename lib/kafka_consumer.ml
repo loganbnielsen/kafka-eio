@@ -363,12 +363,16 @@ let commit_all t =
    scheme (e.g. a retry-topics consumer) outside consume_partitioned. *)
 let pause_partition t ~topic ~partition =
   if is_closed t then Result.error Kafka_error.Destroy
+  else if not (List.mem (topic, partition) (Kafka_raw.assignment t.handle)) then
+    Result.error Kafka_error.Unknown_topic_or_part
   else
     let code = Kafka_raw.pause_partition t.handle topic partition in
     if code = 0 then Ok () else err code
 
 let resume_partition t ~topic ~partition =
   if is_closed t then Result.error Kafka_error.Destroy
+  else if not (List.mem (topic, partition) (Kafka_raw.assignment t.handle)) then
+    Result.error Kafka_error.Unknown_topic_or_part
   else
     let code = Kafka_raw.resume_partition t.handle topic partition in
     if code = 0 then Ok () else err code
@@ -456,20 +460,21 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
     queue.retrying <- retrying;
     let paused = full || retrying in
     if not (is_closed t) && was_paused <> paused then begin
-      let code =
-        if paused then Kafka_raw.pause_partition t.handle queue.topic queue.partition
-        else Kafka_raw.resume_partition t.handle queue.topic queue.partition
+      let result =
+        if paused then pause_partition t ~topic:queue.topic ~partition:queue.partition
+        else resume_partition t ~topic:queue.topic ~partition:queue.partition
       in
-      if code <> 0 then begin
+      match result with
+      | Ok () -> ()
+      | Error error ->
         let action = if paused then "pause" else "resume" in
         let message =
           Printf.sprintf "%s partition %s/%ld failed: %s" action queue.topic
-            queue.partition (Kafka_error.to_string (Kafka_error.of_int code))
+            queue.partition (Kafka_error.to_string error)
         in
-        pause_failure := Some (Kafka_error.of_int code);
+        pause_failure := Some error;
         hooks.on_warning message;
         signal_stop ()
-      end
     end
   in
   Eio.Switch.run (fun sw ->

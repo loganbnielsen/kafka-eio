@@ -404,6 +404,14 @@ let backoff_s ~rng policy attempt =
 
 let default_queue_capacity = 16
 
+type partition_queue = {
+  stream : (message * (unit -> (unit, Kafka_error.t) result)) option Eio.Stream.t;
+  topic : string;
+  partition : int32;
+  mutable full : bool;
+  mutable retrying : bool;
+}
+
 type 'e consume_error =
   | Handler_errors of (int32 * 'e) list
   | Invalid_config of string
@@ -431,9 +439,16 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
   let stop    = Atomic.make false in
   let stop_p, stop_r = Eio.Promise.create () in
   let handler_errors = ref [] in
-  let streams
-    : (int32, (message * (unit -> (unit, Kafka_error.t) result)) option Eio.Stream.t) Hashtbl.t =
-    Hashtbl.create 4
+  let streams : ((string * int32), partition_queue) Hashtbl.t = Hashtbl.create 4
+  in
+  let set_pause queue ~full ~retrying =
+    let was_paused = queue.full || queue.retrying in
+    queue.full <- full;
+    queue.retrying <- retrying;
+    let paused = full || retrying in
+    if not (is_closed t) && was_paused <> paused then
+      if paused then Kafka_raw.pause_partition t.handle queue.topic queue.partition
+      else Kafka_raw.resume_partition t.handle queue.topic queue.partition
   in
   let signal_stop () =
     if Atomic.compare_and_set stop false true then
@@ -459,17 +474,20 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
          Eio.Promise.await stop_p;
          signal_stop ();
          `Stop_daemon));
-    let get_or_create_stream partition =
-      match Hashtbl.find_opt streams partition with
-      | Some s -> s
+    let get_or_create_stream topic partition =
+      match Hashtbl.find_opt streams (topic, partition) with
+      | Some queue -> queue
       | None ->
-        let stream = Eio.Stream.create queue_capacity in
-        Hashtbl.add streams partition stream;
+        let stream = Eio.Stream.create max_int in
+        let queue = { stream; topic; partition; full = false; retrying = false } in
+        Hashtbl.add streams (topic, partition) queue;
         Eio.Fiber.fork ~sw (fun () ->
           let rec loop () =
             match Eio.Stream.take stream with
             | None -> ()
             | Some (msg, ack) ->
+              if queue.full && Eio.Stream.length stream < queue_capacity then
+                set_pause queue ~full:false ~retrying:queue.retrying;
               if Atomic.get stop || is_closed t then loop ()
               else begin
                 let acked = ref false in
@@ -521,15 +539,13 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
                            "attempt %d failed, retrying in %.0fs (topic=%s partition=%ld offset=%Ld)"
                            (n + 1) delay msg.topic msg.partition msg.offset);
                       hooks.on_retry ~partition:msg.partition ~attempt:(n + 1) ~delay_s:delay;
-                      if not (is_closed t) then
-                        Kafka_raw.pause_partition t.handle msg.topic msg.partition;
+                      set_pause queue ~full:queue.full ~retrying:true;
                       let interrupted =
                         Eio.Fiber.first
                           (fun () -> Eio.Time.sleep clock delay; false)
                           (fun () -> Eio.Promise.await stop_p; true)
                       in
-                      if not (is_closed t) then
-                        Kafka_raw.resume_partition t.handle msg.topic msg.partition;
+                      set_pause queue ~full:queue.full ~retrying:false;
                       if not interrupted then attempt (n + 1)
                       else loop () (* stop_p fired mid-sleep — see the Stop case above *)
                     end
@@ -539,7 +555,7 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
           in
           loop ()
         );
-        stream
+        queue
     in
     let rec routing_loop () =
       if Atomic.get stop || is_closed t then ()
@@ -559,12 +575,15 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
             if is_closed t then Result.error Kafka_error.Destroy
             else commit_tracked t ~topic:msg.topic ~partition:msg.partition ~offset:msg.offset
           in
-          Eio.Stream.add (get_or_create_stream msg.partition) (Some (msg, ack));
+          let queue = get_or_create_stream msg.topic msg.partition in
+          Eio.Stream.add queue.stream (Some (msg, ack));
+          if not queue.full && Eio.Stream.length queue.stream >= queue_capacity then
+            set_pause queue ~full:true ~retrying:queue.retrying;
           routing_loop ()
       end
     in
     routing_loop ();
-    Hashtbl.iter (fun _ s -> Eio.Stream.add s None) streams
+    Hashtbl.iter (fun _ queue -> Eio.Stream.add queue.stream None) streams
   );
   match !handler_errors with
   | [] -> Stdlib.Ok ()

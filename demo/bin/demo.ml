@@ -30,7 +30,7 @@ let () =
       Printf.printf "Producing 5 messages to topic '%s'...\n%!" topic;
       let promises = List.init 5 (fun i ->
         let value = Some (Bytes.of_string (Printf.sprintf "sun-message-%d" i)) in
-        let p = Kafka.Producer.produce_await producer ~topic ~value () in
+        let p = Kafka.Producer.produce_receipt producer ~topic ~value () in
         Printf.printf "  enqueued: sun-message-%d\n%!" i;
         p
       ) in

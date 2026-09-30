@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **API change**: `Kafka.Producer.produce` and the promise-returning
+  `Kafka.Producer.produce_await` are replaced by two functions that name their
+  synchronization semantics. `produce_receipt` enqueues a message and returns the
+  delivery-receipt promise — use it to pipeline, awaiting each receipt so every
+  outcome stays observable. `produce_await` enqueues and blocks until the broker
+  reports the delivery outcome, returning it. There is deliberately no
+  fire-and-forget entry point: the old `produce` had no callers outside this
+  repository's own tests, and `ignore (produce_await …)` — which discarded the
+  delivery outcome — was the shape that caused a real retry/DLQ message loss.
+
 - **API change**: every module the library defines is now installed, and `Kafka`
   is a set of aliases over them (`module Consumer = Kafka_consumer`, …) instead of
   a hand-written facade. The facade copies could not be replaced by delegation

@@ -10,14 +10,14 @@ let seed_messages sw n =
   | Error e -> Alcotest.failf "seed producer create failed: %s" (Kafka.Error.to_string e)
   | Ok producer ->
     let promises = List.init n (fun i ->
-      Kafka.Producer.produce_await producer
+      Kafka.Producer.produce_receipt producer
         ~topic:test_topic
         ~key:(Bytes.of_string (string_of_int i))
         ~value:(Some (Bytes.of_string (Printf.sprintf "message-%04d" i))) ()
     ) in
     List.iter (fun p ->
       match Eio.Promise.await p with
-      | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka.Error.to_string e)
+      | Error e -> Alcotest.failf "seed produce_receipt failed: %s" (Kafka.Error.to_string e)
       | Ok () -> ()
     ) promises;
     Kafka.Producer.close producer
@@ -161,8 +161,8 @@ let test_tombstone () =
           | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ());
          List.iter (fun value ->
-           match Eio.Promise.await (Kafka.Producer.produce_await producer ~topic ~value ()) with
-           | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka.Error.to_string e)
+           match Eio.Promise.await (Kafka.Producer.produce_receipt producer ~topic ~value ()) with
+           | Error e -> Alcotest.failf "seed produce_receipt failed: %s" (Kafka.Error.to_string e)
            | Ok () -> ()
          ) [ Some (Bytes.of_string "before"); None; Some Bytes.empty; Some (Bytes.of_string "after") ];
          Kafka.Producer.close producer);
@@ -211,10 +211,10 @@ let test_header_with_null_value () =
                   ~topic_name:topic ~partitions:1 ~replication_factor:1 with
           | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ());
-         (match Eio.Promise.await (Kafka.Producer.produce_await producer
+         (match Eio.Promise.await (Kafka.Producer.produce_receipt producer
                   ~topic ~value:(Some (Bytes.of_string "with-headers"))
                   ~headers:[ ("present", Some "v1"); ("absent", None) ] ()) with
-          | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka.Error.to_string e)
+          | Error e -> Alcotest.failf "seed produce_receipt failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ());
          Kafka.Producer.close producer);
 
@@ -262,8 +262,8 @@ let test_zero_length_key_distinct_from_no_key () =
           | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ());
          let send ?key value =
-           match Eio.Promise.await (Kafka.Producer.produce_await producer ~topic ~value ?key ()) with
-           | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka.Error.to_string e)
+           match Eio.Promise.await (Kafka.Producer.produce_receipt producer ~topic ~value ?key ()) with
+           | Error e -> Alcotest.failf "seed produce_receipt failed: %s" (Kafka.Error.to_string e)
            | Ok () -> ()
          in
          send ~key:Bytes.empty (Some (Bytes.of_string "zero-length-key"));
@@ -325,10 +325,10 @@ let test_consume_partitioned_stop_does_not_hang () =
           | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ());
          for i = 0 to 9 do
-           match Eio.Promise.await (Kafka.Producer.produce_await producer
+           match Eio.Promise.await (Kafka.Producer.produce_receipt producer
                    ~topic ~key:(Bytes.of_string (string_of_int i))
                    ~value:(Some (Bytes.of_string (string_of_int i))) ()) with
-           | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka.Error.to_string e)
+           | Error e -> Alcotest.failf "seed produce_receipt failed: %s" (Kafka.Error.to_string e)
            | Ok () -> ()
          done;
          Kafka.Producer.close producer);
@@ -396,7 +396,7 @@ let test_partition_backpressure_keeps_polling () =
           | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ());
          let receipts = List.init 400 (fun i ->
-           Kafka.Producer.produce_await producer ~topic
+           Kafka.Producer.produce_receipt producer ~topic
              ~value:(Some (Bytes.of_string (string_of_int i))) ()) in
          List.iter (fun receipt ->
            match Eio.Promise.await receipt with
@@ -457,9 +457,9 @@ let test_consume_partitioned_max_attempts_counts_total_executions () =
                   ~topic_name:topic ~partitions:1 ~replication_factor:1 with
           | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ());
-         (match Eio.Promise.await (Kafka.Producer.produce_await producer
+         (match Eio.Promise.await (Kafka.Producer.produce_receipt producer
                   ~topic ~value:(Some (Bytes.of_string "boom")) ()) with
-          | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka.Error.to_string e)
+          | Error e -> Alcotest.failf "seed produce_receipt failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ());
          Kafka.Producer.close producer);
 
@@ -526,9 +526,9 @@ let test_commit_all_does_not_commit_past_processed () =
           | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ());
          for i = 0 to 4 do
-           match Eio.Promise.await (Kafka.Producer.produce_await producer
+           match Eio.Promise.await (Kafka.Producer.produce_receipt producer
                    ~topic ~value:(Some (Bytes.of_string (string_of_int i))) ()) with
-           | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka.Error.to_string e)
+           | Error e -> Alcotest.failf "seed produce_receipt failed: %s" (Kafka.Error.to_string e)
            | Ok () -> ()
          done;
          Kafka.Producer.close producer);
@@ -596,9 +596,9 @@ let test_consume_partitioned_stops_on_direct_close () =
                   ~topic_name:topic ~partitions:1 ~replication_factor:1 with
           | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ());
-         (match Eio.Promise.await (Kafka.Producer.produce_await producer
+         (match Eio.Promise.await (Kafka.Producer.produce_receipt producer
                   ~topic ~value:(Some (Bytes.of_string "x")) ()) with
-          | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka.Error.to_string e)
+          | Error e -> Alcotest.failf "seed produce_receipt failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ());
          Kafka.Producer.close producer);
 
@@ -651,10 +651,10 @@ let test_commit_all_survives_rebalance () =
       let group_id = Printf.sprintf "kafka-eio-test-rebalance-group-%d" pid in
       let produce_range producer lo hi =
         for i = lo to hi do
-          match Eio.Promise.await (Kafka.Producer.produce_await producer
+          match Eio.Promise.await (Kafka.Producer.produce_receipt producer
                   ~topic ~key:(Bytes.of_string (string_of_int i))
                   ~value:(Some (Bytes.of_string (Printf.sprintf "seed-%d" i))) ()) with
-          | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka.Error.to_string e)
+          | Error e -> Alcotest.failf "seed produce_receipt failed: %s" (Kafka.Error.to_string e)
           | Ok () -> ()
         done
       in
@@ -765,9 +765,9 @@ let test_pause_resume_partition () =
         match Kafka.Producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
         | Error e -> Alcotest.failf "seed producer create failed: %s" (Kafka.Error.to_string e)
         | Ok producer ->
-          (match Eio.Promise.await (Kafka.Producer.produce_await producer
+          (match Eio.Promise.await (Kafka.Producer.produce_receipt producer
                    ~topic ~value:(Some (Bytes.of_string value)) ()) with
-           | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka.Error.to_string e)
+           | Error e -> Alcotest.failf "seed produce_receipt failed: %s" (Kafka.Error.to_string e)
            | Ok () -> ());
           Kafka.Producer.close producer
       in
@@ -865,9 +865,9 @@ let test_idle_past_max_poll_interval_stays_in_group () =
         match Kafka.Producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
         | Error e -> Alcotest.failf "seed producer create failed: %s" (Kafka.Error.to_string e)
         | Ok producer ->
-          (match Eio.Promise.await (Kafka.Producer.produce_await producer
+          (match Eio.Promise.await (Kafka.Producer.produce_receipt producer
                    ~topic ~value:(Some (Bytes.of_string value)) ()) with
-           | Error e -> Alcotest.failf "seed produce_await failed: %s" (Kafka.Error.to_string e)
+           | Error e -> Alcotest.failf "seed produce_receipt failed: %s" (Kafka.Error.to_string e)
            | Ok () -> ());
           Kafka.Producer.close producer
       in

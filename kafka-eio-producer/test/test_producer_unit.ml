@@ -1,5 +1,5 @@
 (** Unit tests for kafka-eio-producer that don't require a live broker:
-    use-after-close, and close resolving pending produce_await.
+    use-after-close, and close resolving pending produce_receipt.
 
     topic_new's null-pointer failure path (Kafka_raw.topic_new returning a
     result) has no test here: this librdkafka build doesn't validate topic
@@ -20,7 +20,7 @@ let test_produce_after_close_is_destroyed () =
       | Error e -> Alcotest.failf "create failed: %s" (Kafka.Error.to_string e)
       | Ok producer ->
         Kafka.Producer.close producer;
-        (match Kafka.Producer.produce producer ~topic:"t" ~value:(Some (Bytes.of_string "x")) () with
+        (match Kafka.Producer.produce_await producer ~topic:"t" ~value:(Some (Bytes.of_string "x")) () with
          | Error Kafka.Error.Destroy -> ()
          | Ok () -> Alcotest.fail "expected produce after close to fail"
          | Error e -> Alcotest.failf "expected Destroy, got %s" (Kafka.Error.to_string e));
@@ -29,14 +29,14 @@ let test_produce_after_close_is_destroyed () =
          | Ok () -> Alcotest.fail "expected flush after close to fail"
          | Error e -> Alcotest.failf "expected Destroy, got %s" (Kafka.Error.to_string e))
 
-let test_close_resolves_pending_produce_await () =
+let test_close_resolves_pending_produce_receipt () =
   Eio_main.run @@ fun env ->
     Eio.Switch.run @@ fun sw ->
       match Kafka.Producer.create unreachable_config ~sw with
       | Error e -> Alcotest.failf "create failed: %s" (Kafka.Error.to_string e)
       | Ok producer ->
         let promise =
-          Kafka.Producer.produce_await producer ~topic:"t" ~value:(Some (Bytes.of_string "x")) ()
+          Kafka.Producer.produce_receipt producer ~topic:"t" ~value:(Some (Bytes.of_string "x")) ()
         in
         (* close flushes (up to 5s) against an unreachable broker, then must
            still resolve this promise rather than leave it pending forever. *)
@@ -44,7 +44,7 @@ let test_close_resolves_pending_produce_await () =
         (match Eio.Time.with_timeout env#clock 10.0
                  (fun () -> Ok (Eio.Promise.await promise)) with
          | Error `Timeout ->
-           Alcotest.fail "produce_await promise never resolved after close"
+           Alcotest.fail "produce_receipt promise never resolved after close"
          | Ok (Ok ()) ->
            Alcotest.fail "expected the pending promise to resolve to Error after close"
          | Ok (Error _) -> ())
@@ -76,8 +76,8 @@ let () =
     "close_and_validation", [
       test_case "produce/flush after close return Destroy" `Quick
         test_produce_after_close_is_destroyed;
-      test_case "close resolves pending produce_await" `Quick
-        test_close_resolves_pending_produce_await;
+      test_case "close resolves pending produce_receipt" `Quick
+        test_close_resolves_pending_produce_receipt;
       test_case "close does not leak pipe fds" `Quick
         test_close_does_not_leak_pipe_fds;
     ];

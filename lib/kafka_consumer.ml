@@ -363,11 +363,15 @@ let commit_all t =
    scheme (e.g. a retry-topics consumer) outside consume_partitioned. *)
 let pause_partition t ~topic ~partition =
   if is_closed t then Result.error Kafka_error.Destroy
-  else Result.ok (Kafka_raw.pause_partition t.handle topic partition)
+  else
+    let code = Kafka_raw.pause_partition t.handle topic partition in
+    if code = 0 then Ok () else err code
 
 let resume_partition t ~topic ~partition =
   if is_closed t then Result.error Kafka_error.Destroy
-  else Result.ok (Kafka_raw.resume_partition t.handle topic partition)
+  else
+    let code = Kafka_raw.resume_partition t.handle topic partition in
+    if code = 0 then Ok () else err code
 
 (* ── Per-partition fiber consumer with retry + pause/resume ──────────────── *)
 
@@ -415,6 +419,7 @@ type partition_queue = {
 type 'e consume_error =
   | Handler_errors of (int32 * 'e) list
   | Invalid_config of string
+  | Consumer_error of Kafka_error.t
 
 (* Routes each message to a per-partition fiber so retry backoff on one
    partition never blocks another; the partition is paused at the librdkafka
@@ -423,10 +428,9 @@ type 'e consume_error =
    cancelled mid-call — see the .mli for why this doesn't weaken
    cancellation.
 
-   Partition streams are bounded (queue_capacity); routing_loop adds to them
-   synchronously rather than via a forked fiber, since forking one fiber per
-   message was tried and reverted — it trades a bounded stall for unbounded
-   fiber growth on a backed-up partition. *)
+   Pause fetching when a partition stream reaches queue_capacity. Already
+   prefetched records can exceed that mark; librdkafka's finite fetch queue
+   bounds the excess while the routing and poll fibers keep running. *)
 let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
     ?(hooks = default_hooks)
     ?(queue_capacity = default_queue_capacity)
@@ -439,20 +443,34 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
   let stop    = Atomic.make false in
   let stop_p, stop_r = Eio.Promise.create () in
   let handler_errors = ref [] in
+  let pause_failure = ref None in
   let streams : ((string * int32), partition_queue) Hashtbl.t = Hashtbl.create 4
+  in
+  let signal_stop () =
+    if Atomic.compare_and_set stop false true then
+      Eio.Promise.resolve stop_r ()
   in
   let set_pause queue ~full ~retrying =
     let was_paused = queue.full || queue.retrying in
     queue.full <- full;
     queue.retrying <- retrying;
     let paused = full || retrying in
-    if not (is_closed t) && was_paused <> paused then
-      if paused then Kafka_raw.pause_partition t.handle queue.topic queue.partition
-      else Kafka_raw.resume_partition t.handle queue.topic queue.partition
-  in
-  let signal_stop () =
-    if Atomic.compare_and_set stop false true then
-      Eio.Promise.resolve stop_r ()
+    if not (is_closed t) && was_paused <> paused then begin
+      let code =
+        if paused then Kafka_raw.pause_partition t.handle queue.topic queue.partition
+        else Kafka_raw.resume_partition t.handle queue.topic queue.partition
+      in
+      if code <> 0 then begin
+        let action = if paused then "pause" else "resume" in
+        let message =
+          Printf.sprintf "%s partition %s/%ld failed: %s" action queue.topic
+            queue.partition (Kafka_error.to_string (Kafka_error.of_int code))
+        in
+        pause_failure := Some (Kafka_error.of_int code);
+        hooks.on_warning message;
+        signal_stop ()
+      end
+    end
   in
   Eio.Switch.run (fun sw ->
     (* Watchdog: closing the consumer directly (instead of cancelling ~sw)
@@ -585,8 +603,9 @@ let consume_partitioned t ~sw:_ ~clock ?(retry = default_retry)
     routing_loop ();
     Hashtbl.iter (fun _ queue -> Eio.Stream.add queue.stream None) streams
   );
-  match !handler_errors with
-  | [] -> Stdlib.Ok ()
-  | errors ->
+  match !pause_failure, !handler_errors with
+  | Some error, _ -> Stdlib.Error (Consumer_error error)
+  | None, [] -> Stdlib.Ok ()
+  | None, errors ->
     Stdlib.Error (Handler_errors
       (List.sort (fun (p1, _) (p2, _) -> Int32.compare p1 p2) errors))

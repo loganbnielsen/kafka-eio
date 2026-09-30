@@ -218,6 +218,7 @@ val default_queue_capacity : int
 type 'e consume_error =
   | Handler_errors of (int32 * 'e) list
   | Invalid_config of string
+  | Consumer_error of Kafka_error.t
 (** Result error for [consume_partitioned]: either exhausted handler errors by
     partition, or invalid consumer-loop configuration rejected before polling. *)
 

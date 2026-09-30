@@ -130,5 +130,5 @@ external send_offsets_to_transaction
 (** Pause / resume delivery for a single partition. Local operations — no
     broker round-trip. Used by consume_partitioned to stop new messages arriving
     for a partition while its retry fiber sleeps. *)
-external pause_partition  : kafka_handle -> string -> int32 -> unit = "ocaml_rd_kafka_pause_partition"
-external resume_partition : kafka_handle -> string -> int32 -> unit = "ocaml_rd_kafka_resume_partition"
+external pause_partition  : kafka_handle -> string -> int32 -> int = "ocaml_rd_kafka_pause_partition"
+external resume_partition : kafka_handle -> string -> int32 -> int = "ocaml_rd_kafka_resume_partition"

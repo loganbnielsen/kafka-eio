@@ -378,7 +378,9 @@ let test_consume_partitioned_stop_does_not_hang () =
          | Ok (Error (Kafka.Consumer.Handler_errors errors)) ->
            Alcotest.failf "unexpected handler error count: %d" (List.length errors)
          | Ok (Error (Kafka.Consumer.Invalid_config e)) ->
-           Alcotest.failf "unexpected invalid config: %s" e);
+           Alcotest.failf "unexpected invalid config: %s" e
+         | Ok (Error (Kafka.Consumer.Consumer_error e)) ->
+           Alcotest.failf "unexpected consumer error: %s" (Kafka.Error.to_string e));
         Kafka.Consumer.close consumer
 
 let test_partition_backpressure_keeps_polling () =
@@ -499,7 +501,9 @@ let test_consume_partitioned_max_attempts_counts_total_executions () =
          | Error (Kafka.Consumer.Handler_errors errors) ->
            Alcotest.failf "unexpected handler error count: %d" (List.length errors)
          | Error (Kafka.Consumer.Invalid_config e) ->
-           Alcotest.failf "unexpected invalid config: %s" e);
+           Alcotest.failf "unexpected invalid config: %s" e
+         | Error (Kafka.Consumer.Consumer_error e) ->
+           Alcotest.failf "unexpected consumer error: %s" (Kafka.Error.to_string e));
         Kafka.Consumer.close consumer
 
 (* librdkafka's default auto.offset.store advances the "stored" position

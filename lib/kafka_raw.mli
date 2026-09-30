@@ -198,7 +198,7 @@ val send_offsets_to_transaction
 
 (** [pause_partition handle topic partition] pauses delivery for one partition.
     Local operation — no broker round-trip. Safe to call from any fiber. *)
-val pause_partition  : kafka_handle -> string -> int32 -> unit
+val pause_partition  : kafka_handle -> string -> int32 -> int
 
 (** [resume_partition handle topic partition] resumes delivery for one partition. *)
-val resume_partition : kafka_handle -> string -> int32 -> unit
+val resume_partition : kafka_handle -> string -> int32 -> int

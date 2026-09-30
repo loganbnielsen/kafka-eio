@@ -27,9 +27,9 @@ type t
 val create : config -> sw:Eio.Switch.t -> (t, Kafka_error.t) result
 
 (** Every operation below returns [Error Kafka_error.Destroy] (or, for
-    [produce_await], a promise already resolved to it) once [close] has been
+    [produce_receipt], a promise already resolved to it) once [close] has been
     called, instead of touching the underlying (possibly destroyed) handle.
-    [close] itself also resolves any [produce_await] promises still awaiting
+    [close] itself also resolves any [produce_receipt] promises still awaiting
     a delivery receipt to [Error Kafka_error.Destroy], so a fiber awaiting one
     cannot hang forever past shutdown. *)
 val close : t -> unit
@@ -58,39 +58,52 @@ val create_topic
   -> replication_factor:int
   -> (unit, Kafka_error.t) result
 
-(** Enqueue a message and return immediately. No delivery confirmation.
-    [value = None] sends a Kafka tombstone (a NULL payload — the delete
-    marker for a key on a compacted topic), distinct from
-    [Some Bytes.empty], a genuine zero-length value. [value] is required
-    (not optional) so a caller must choose explicitly, rather than a
-    forgotten [~value] silently sending a tombstone. [~key], if given, is
-    used exactly as passed — including a genuine zero-length key, which
-    Kafka partitions differently (hashed) from no key at all (round-
-    robin/sticky); omitting [~key] entirely means no key. A header's
-    value is [string option]: [None] sends a NULL-valued header, distinct
-    from [Some ""].
+(** Enqueue a message and return a promise that resolves when the broker reports
+    its delivery outcome — see [produce_await] for the blocking form, and for
+    exactly which event ends the wait.
 
-    Can return [Error Kafka_error.Queue_full] if librdkafka's local send
-    queue is full — this call does not block or retry for you. Callers
-    producing at a high rate must handle it themselves (drop, retry after
-    a delay, or apply their own backpressure); there is currently no
-    Eio-native blocking/backpressure variant of [produce].
+    [value = None] sends a Kafka tombstone (a NULL payload — the delete marker
+    for a key on a compacted topic), distinct from [Some Bytes.empty], a genuine
+    zero-length value. [value] is required (not optional) so a caller must choose
+    explicitly, rather than a forgotten [~value] silently sending a tombstone.
+    [~key], if given, is used exactly as passed — including a genuine zero-length
+    key, which Kafka partitions differently (hashed) from no key at all
+    (round-robin/sticky); omitting [~key] entirely means no key. A header's value
+    is [string option]: [None] sends a NULL-valued header, distinct from
+    [Some ""].
 
+    Can resolve to [Error Kafka_error.Queue_full] if librdkafka's local send
+    queue is full — this call does not block or retry for you. Callers producing
+    at a high rate must handle it themselves (drop, retry after a delay, or apply
+    their own backpressure).
+
+    Use this instead of [produce_await] when pipelining several sends: collect
+    the receipts and await each one, so every message's outcome stays visible
+    rather than being discarded. There is deliberately no fire-and-forget entry
+    point — discarding a receipt silently discards the delivery outcome.
     The trailing [unit] is required by OCaml's optional-argument erasure rules. *)
-val produce
+val produce_receipt
   :  t
   -> topic:string
   -> value:bytes option
   -> ?key:bytes
   -> ?headers:(string * string option) list
   -> unit
-  -> (unit, Kafka_error.t) result
+  -> (unit, Kafka_error.t) result Eio.Promise.t
 
-(** Enqueue a message and return a promise that resolves when the broker
-    acknowledges delivery (or reports an error). [value = None] sends a
-    tombstone, and [~key]/[~headers] behave exactly as in [produce]. Can
-    resolve to [Error Kafka_error.Queue_full] the same way [produce] can
-    return it — see [produce].
+(** [produce_await t ~topic ~value ?key ?headers ()] enqueues a message and
+    blocks until the broker reports its delivery outcome, returning that result.
+
+    What ends the wait is librdkafka's delivery report for this message: the
+    promise resolves once the broker has acknowledged it under the producer's
+    configured acknowledgement semantics — librdkafka's default, or whatever
+    [config.properties] overrides ([delivery_mode = Exactly_once] requires
+    [acks = all]). It is a *broker* acknowledgement of the write, not a consumer
+    acknowledgement, and it says nothing about downstream processing.
+
+    Returns [Error Kafka_error.Queue_full] when librdkafka's local send queue is
+    full, and [Error Kafka_error.Destroy] once [close] has been called.
+    [value], [~key] and [~headers] behave exactly as in [produce_receipt].
     The trailing [unit] is required by OCaml's optional-argument erasure rules. *)
 val produce_await
   :  t
@@ -99,7 +112,7 @@ val produce_await
   -> ?key:bytes
   -> ?headers:(string * string option) list
   -> unit
-  -> (unit, Kafka_error.t) result Eio.Promise.t
+  -> (unit, Kafka_error.t) result
 
 (** Block until all enqueued messages have been delivered. *)
 val flush : t -> timeout_ms:int -> (unit, Kafka_error.t) result

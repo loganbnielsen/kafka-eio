@@ -197,7 +197,7 @@ let close t =
       ignore (Kafka_raw.flush t.handle 5000);
       Eio.Promise.resolve t.delivery_stop_r ();
       Eio.Promise.await t.delivery_exited;
-      (* Resolve any produce_await promises that never got a delivery
+      (* Resolve any produce_receipt promises that never got a delivery
          receipt — the pipe can drop one under backpressure, or flush can
          time out — so a waiting fiber doesn't hang after close. *)
       let leftover =
@@ -270,7 +270,7 @@ let create (cfg : config) ~sw =
     let start_fibers () =
       delivery_fiber t sw;
       (* poll_fiber drains librdkafka's main queue so delivery callbacks
-         (and produce_await promises) fire continuously, not just when a
+         (and produce_receipt promises) fire continuously, not just when a
          transaction happens to call flush/commit/abort. *)
       poll_fiber t sw;
       Eio.Switch.on_release sw (fun () -> close t);
@@ -283,23 +283,7 @@ let create (cfg : config) ~sw =
         | Ok () -> start_fibers ())
      | _ -> start_fibers ())
 
-let produce t ~topic ~value ?key ?(headers = []) () =
-  if is_closed t then Error Kafka_error.Destroy
-  else
-    match headers with
-    | [] ->
-      (match get_or_create_topic t topic with
-       | Error e -> Error e
-       | Ok rkt ->
-         match Kafka_raw.produce rkt Int32.minus_one value key 0L with
-         | Ok () -> Ok ()
-         | Error i -> err i)
-    | _ ->
-      (match Kafka_raw.produce_v t.handle topic Int32.minus_one value key 0L headers with
-       | Ok () -> Ok ()
-       | Error i -> err i)
-
-let produce_await t ~topic ~value ?key ?(headers = []) () =
+let produce_receipt t ~topic ~value ?key ?(headers = []) () =
   let promise, resolver = Eio.Promise.create () in
   if is_closed t then begin
     Eio.Promise.resolve resolver (Error Kafka_error.Destroy);
@@ -338,6 +322,9 @@ let produce_await t ~topic ~value ?key ?(headers = []) () =
      | Ok () -> ());
     promise
   end
+
+let produce_await t ~topic ~value ?key ?(headers = []) () =
+  Eio.Promise.await (produce_receipt t ~topic ~value ?key ~headers ())
 
 type topic_config = { min_insync_replicas : int }
 

@@ -218,6 +218,7 @@ val default_queue_capacity : int
 type 'e consume_error =
   | Handler_errors of (int32 * 'e) list
   | Invalid_config of string
+  | Consumer_error of Kafka_error.t
 (** Result error for [consume_partitioned]: either exhausted handler errors by
     partition, or invalid consumer-loop configuration rejected before polling. *)
 
@@ -231,11 +232,10 @@ type 'e consume_error =
     two messages from the same partition concurrently against one [t], since
     out-of-order [ack] would silently skip unprocessed messages.
 
-    [queue_capacity] bounds each partition's queue (default
-    [default_queue_capacity]); routing dispatches synchronously rather than
-    via a per-message fiber, so a full partition queue stalls routing to
-    every other partition until it drains — a deliberate tradeoff for a
-    hard memory bound over unbounded fiber growth. Must be positive.
+    [queue_capacity] is the per-partition high-water mark (default
+    [default_queue_capacity]). The consumer pauses fetching from a partition
+    at that mark while routing and polling continue for other partitions.
+    Already prefetched records may exceed the mark. Must be positive.
 
     [hooks.on_retry ~partition ~attempt ~delay_s] fires just before each retry
     sleep, and [hooks.on_warning] receives text for ack-misuse and

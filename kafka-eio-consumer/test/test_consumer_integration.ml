@@ -378,7 +378,71 @@ let test_consume_partitioned_stop_does_not_hang () =
          | Ok (Error (Kafka.Consumer.Handler_errors errors)) ->
            Alcotest.failf "unexpected handler error count: %d" (List.length errors)
          | Ok (Error (Kafka.Consumer.Invalid_config e)) ->
-           Alcotest.failf "unexpected invalid config: %s" e);
+           Alcotest.failf "unexpected invalid config: %s" e
+         | Ok (Error (Kafka.Consumer.Consumer_error e)) ->
+           Alcotest.failf "unexpected consumer error: %s" (Kafka.Error.to_string e));
+        Kafka.Consumer.close consumer
+
+let test_partition_backpressure_keeps_polling () =
+  Eio_main.run @@ fun env ->
+    Eio.Switch.run @@ fun sw ->
+      let pid = Unix.getpid () in
+      let topic = Printf.sprintf "kafka-eio-test-backpressure-%d" pid in
+      (match Kafka.Producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
+       | Error e -> Alcotest.failf "producer create failed: %s" (Kafka.Error.to_string e)
+       | Ok producer ->
+         (match Kafka.Producer.create_topic producer
+                  ~topic_name:topic ~partitions:1 ~replication_factor:1 with
+          | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka.Error.to_string e)
+          | Ok () -> ());
+         let receipts = List.init 400 (fun i ->
+           Kafka.Producer.produce_await producer ~topic
+             ~value:(Some (Bytes.of_string (string_of_int i))) ()) in
+         List.iter (fun receipt ->
+           match Eio.Promise.await receipt with
+           | Ok () -> ()
+           | Error e -> Alcotest.failf "produce failed: %s" (Kafka.Error.to_string e)) receipts;
+         Kafka.Producer.close producer);
+      let last_poll = ref (Eio.Time.now env#clock) in
+      let max_gap = ref 0.0 in
+      let revocations = ref 0 in
+      let hooks =
+        { Kafka.Consumer.default_hooks with
+          on_poll = (fun () ->
+            let now = Eio.Time.now env#clock in
+            max_gap := Float.max !max_gap (now -. !last_poll);
+            last_poll := now)
+        ; on_revoked = (fun () -> incr revocations)
+        }
+      in
+      let cfg : Kafka.Consumer.config =
+        { (make_consumer_config ()) with
+          group_id = Printf.sprintf "kafka-eio-test-backpressure-group-%d" pid;
+          topics = [ topic ];
+          properties = [ "max.poll.interval.ms", "10000"; "session.timeout.ms", "6000" ];
+        }
+      in
+      match Kafka.Consumer.create ~hooks ~clock:env#clock cfg ~sw with
+      | Error e -> Alcotest.failf "consumer create failed: %s" (Kafka.Error.to_string e)
+      | Ok consumer ->
+        let seen = ref 0 in
+        let handler _msg ~ack =
+          incr seen;
+          if !seen = 1 then Eio.Time.sleep env#clock 12.0;
+          (match ack () with
+           | Ok () -> ()
+           | Error e -> Alcotest.failf "ack failed: %s" (Kafka.Error.to_string e));
+          if !seen = 400 then Kafka.Consumer.Stop else Kafka.Consumer.Continue
+        in
+        (match Eio.Time.with_timeout env#clock 35.0 (fun () ->
+           Ok (Kafka.Consumer.consume_partitioned consumer ~sw ~clock:env#clock
+             ~queue_capacity:16 ~handler ())) with
+         | Error `Timeout -> Alcotest.fail "backpressured consumer stalled"
+         | Ok (Error _) -> Alcotest.fail "partition handler failed"
+         | Ok (Ok ()) -> ());
+        Alcotest.(check int) "all messages" 400 !seen;
+        Alcotest.(check int) "no revocation" 0 !revocations;
+        Alcotest.(check bool) "poll gap below max.poll.interval" true (!max_gap < 10.0);
         Kafka.Consumer.close consumer
 
 let test_consume_partitioned_max_attempts_counts_total_executions () =
@@ -437,7 +501,9 @@ let test_consume_partitioned_max_attempts_counts_total_executions () =
          | Error (Kafka.Consumer.Handler_errors errors) ->
            Alcotest.failf "unexpected handler error count: %d" (List.length errors)
          | Error (Kafka.Consumer.Invalid_config e) ->
-           Alcotest.failf "unexpected invalid config: %s" e);
+           Alcotest.failf "unexpected invalid config: %s" e
+         | Error (Kafka.Consumer.Consumer_error e) ->
+           Alcotest.failf "unexpected consumer error: %s" (Kafka.Error.to_string e));
         Kafka.Consumer.close consumer
 
 (* librdkafka's default auto.offset.store advances the "stored" position
@@ -746,6 +812,10 @@ let test_pause_resume_partition () =
          | Some msg -> Alcotest.(check string) "seeded message arrives" "before-pause" (value_of msg)
          | None -> Alcotest.fail "expected the seeded message before pausing");
 
+        (match Kafka.Consumer.pause_partition consumer ~topic ~partition:999l with
+         | Error _ -> ()
+         | Ok () -> Alcotest.fail "pause_partition accepted an unassigned partition");
+
         (match Kafka.Consumer.pause_partition consumer ~topic ~partition:0l with
          | Error e -> Alcotest.failf "pause_partition failed: %s" (Kafka.Error.to_string e)
          | Ok () -> ());
@@ -858,6 +928,8 @@ let () =
         test_zero_length_key_distinct_from_no_key;
       test_case "consume_partitioned stop does not hang" `Slow
         test_consume_partitioned_stop_does_not_hang;
+      test_case "partition backpressure keeps polling" `Slow
+        test_partition_backpressure_keeps_polling;
       test_case "consume_partitioned max_attempts counts total executions" `Slow
         test_consume_partitioned_max_attempts_counts_total_executions;
       test_case "commit_all does not commit past what was processed" `Slow

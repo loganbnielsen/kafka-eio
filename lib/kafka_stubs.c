@@ -1138,24 +1138,26 @@ value ocaml_rd_kafka_pause_partition(value handle_v, value topic_v, value part_v
 {
   CAMLparam3(handle_v, topic_v, part_v);
   rd_kafka_t *rk = *((rd_kafka_t **)Data_custom_val(handle_v));
-  if (!rk) CAMLreturn(Val_unit);
+  if (!rk) CAMLreturn(Val_int(RD_KAFKA_RESP_ERR__DESTROY));
   rd_kafka_topic_partition_list_t *tpl = rd_kafka_topic_partition_list_new(1);
   rd_kafka_topic_partition_list_add(tpl, String_val(topic_v),
                                     (int32_t)Int32_val(part_v));
-  rd_kafka_pause_partitions(rk, tpl);
+  rd_kafka_resp_err_t err = rd_kafka_pause_partitions(rk, tpl);
+  if (err == RD_KAFKA_RESP_ERR_NO_ERROR) err = tpl->elems[0].err;
   rd_kafka_topic_partition_list_destroy(tpl);
-  CAMLreturn(Val_unit);
+  CAMLreturn(Val_int(err));
 }
 
 value ocaml_rd_kafka_resume_partition(value handle_v, value topic_v, value part_v)
 {
   CAMLparam3(handle_v, topic_v, part_v);
   rd_kafka_t *rk = *((rd_kafka_t **)Data_custom_val(handle_v));
-  if (!rk) CAMLreturn(Val_unit);
+  if (!rk) CAMLreturn(Val_int(RD_KAFKA_RESP_ERR__DESTROY));
   rd_kafka_topic_partition_list_t *tpl = rd_kafka_topic_partition_list_new(1);
   rd_kafka_topic_partition_list_add(tpl, String_val(topic_v),
                                     (int32_t)Int32_val(part_v));
-  rd_kafka_resume_partitions(rk, tpl);
+  rd_kafka_resp_err_t err = rd_kafka_resume_partitions(rk, tpl);
+  if (err == RD_KAFKA_RESP_ERR_NO_ERROR) err = tpl->elems[0].err;
   rd_kafka_topic_partition_list_destroy(tpl);
-  CAMLreturn(Val_unit);
+  CAMLreturn(Val_int(err));
 }

@@ -913,11 +913,72 @@ let test_idle_past_max_poll_interval_stays_in_group () =
               regression) -- message did not arrive within a rejoin-free budget");
         Kafka.Consumer.close consumer
 
+let test_idle_member_is_observed () =
+  Eio_main.run
+  @@ fun env ->
+  Eio.Switch.run
+  @@ fun sw ->
+  let pid = Unix.getpid () in
+  let topic = Printf.sprintf "kafka-eio-test-idle-member-%d" pid in
+  let group_id = Printf.sprintf "kafka-eio-test-idle-member-group-%d" pid in
+  (match Kafka.Producer.create (Kafka_test_helpers.default_producer_config ()) ~sw with
+   | Error e -> Alcotest.failf "topic producer create failed: %s" (Kafka.Error.to_string e)
+   | Ok producer ->
+     (match
+        Kafka.Producer.create_topic
+          producer
+          ~topic_name:topic
+          ~partitions:1
+          ~replication_factor:1
+      with
+      | Ok () -> ()
+      | Error e -> Alcotest.failf "create_topic failed: %s" (Kafka.Error.to_string e));
+     Kafka.Producer.close producer);
+  let cfg = Kafka_test_helpers.default_consumer_config ~group_id ~topics:[ topic ] () in
+  let a_owned = ref None in
+  let b_owned = ref None in
+  let hooks_for into =
+    { Kafka.Consumer.default_hooks with
+      on_assignment = (fun n -> into := Some n)
+    }
+  in
+  match Kafka.Consumer.create ~clock:env#clock cfg ~sw ~hooks:(hooks_for a_owned) with
+  | Error e -> Alcotest.failf "member a create failed: %s" (Kafka.Error.to_string e)
+  | Ok a ->
+    (match Kafka.Consumer.create ~clock:env#clock cfg ~sw ~hooks:(hooks_for b_owned) with
+     | Error e -> Alcotest.failf "member b create failed: %s" (Kafka.Error.to_string e)
+     | Ok b ->
+       let observed n = Option.fold ~none:"never" ~some:string_of_int n in
+       let settled () =
+         Option.is_some !a_owned
+         && Option.is_some !b_owned
+         && (!a_owned = Some 0 || !b_owned = Some 0)
+       in
+       let deadline = Unix.gettimeofday () +. 25.0 in
+       let rec wait () =
+         if settled ()
+         then ()
+         else if Unix.gettimeofday () >= deadline
+         then
+           Alcotest.failf
+             "two members on a one-partition topic were never both observed (a=%s b=%s)"
+             (observed !a_owned)
+             (observed !b_owned)
+         else (
+           Eio.Time.sleep env#clock 0.2;
+           wait ())
+       in
+       wait ();
+       Kafka.Consumer.close b);
+    Kafka.Consumer.close a
+
 let () =
   let open Alcotest in
   run "kafka_consumer_integration" [
     "consume", [
       test_case "poll messages"    `Slow test_poll_messages;
+      test_case "an idle member of a one-partition topic is observed" `Slow
+        test_idle_member_is_observed;
       test_case "consume with ack" `Slow test_consume_with_ack;
       test_case "fetch api"        `Slow test_fetch_api;
       test_case "hooks are observed" `Slow test_hooks_are_observed;

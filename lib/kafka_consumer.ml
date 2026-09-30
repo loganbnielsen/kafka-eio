@@ -58,6 +58,7 @@ let default_on_warning msg = Printf.eprintf "kafka-eio: %s\n%!" msg
 
 type hooks =
   { on_ready : unit -> unit
+  ; on_assignment : int -> unit
   ; on_assigned : unit -> unit
   ; on_revoked : unit -> unit
   ; on_poll : unit -> unit
@@ -120,6 +121,7 @@ let poll_fiber t sw ~clock ~hooks =
     let wake_buf = Cstruct.create 4096 in
     let notified = ref false in
     let prev_assignment = ref None in
+    let prev_owned = ref None in
     (* Rebalance transitions also wake the consumer queue, so assignment can
        be tracked per wake instead of by fixed-period polling. *)
     let rec drain () =
@@ -141,6 +143,17 @@ let poll_fiber t sw ~clock ~hooks =
         if Option.is_some !prev_assignment then Hashtbl.reset t.last_processed;
         prev_assignment := Some assignment
       end;
+      (* Membership is separate from ownership: an idle standby owns nothing
+         yet is a healthy group member, and [assignment] reads [] both for it
+         and for a consumer that has not joined. [memberid] tells them apart,
+         so [on_assignment] reports the count once membership exists. *)
+      let owned = List.length assignment in
+      if Kafka_raw.memberid t.handle = None
+      then prev_owned := None
+      else if !prev_owned <> Some owned
+      then (
+        prev_owned := Some owned;
+        hooks.on_assignment owned);
       if not !notified && assignment <> [] then begin
         notified := true; hooks.on_ready ()
       end;
@@ -216,6 +229,7 @@ let default_on_poll_error code =
 
 let default_hooks =
   { on_ready = ignore
+  ; on_assignment = ignore
   ; on_assigned = ignore
   ; on_revoked = ignore
   ; on_poll = ignore

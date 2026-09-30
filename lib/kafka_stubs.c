@@ -691,6 +691,24 @@ CAMLprim value ocaml_rd_kafka_assignment(value handle_v) {
 }
 
 /* ------------------------------------------------------------------ */
+/* memberid                                                             */
+/* ------------------------------------------------------------------ */
+
+/* The consumer's group member id, or None when it is not currently a member
+   of a consumer group. librdkafka owns the returned string, so copy it; both
+   NULL and the empty string mean "not a member". */
+CAMLprim value ocaml_rd_kafka_memberid(value handle_v) {
+  CAMLparam1(handle_v);
+  CAMLlocal1(some_v);
+  rd_kafka_t *rk = *((rd_kafka_t **)Data_custom_val(handle_v));
+  const char *member = rk ? rd_kafka_memberid(rk) : NULL;
+  if (member == NULL || member[0] == '\0') CAMLreturn(Val_int(0));
+  some_v = caml_alloc(1, 0);
+  Store_field(some_v, 0, caml_copy_string(member));
+  CAMLreturn(some_v);
+}
+
+/* ------------------------------------------------------------------ */
 /* create_topic (librdkafka admin API)                                 */
 /* ------------------------------------------------------------------ */
 

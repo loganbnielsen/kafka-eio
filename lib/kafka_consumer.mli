@@ -62,6 +62,7 @@ type t
     ones. Each entry point observes the fields it can and ignores the rest. *)
 type hooks =
   { on_ready : unit -> unit
+  ; on_assignment : int -> unit
   ; on_assigned : unit -> unit
   ; on_revoked : unit -> unit
   ; on_poll : unit -> unit
@@ -72,10 +73,10 @@ type hooks =
 
 val default_hooks : hooks
 (** The policy this library shipped with, and the default for every entry
-    point: [on_ready], [on_assigned], [on_revoked], [on_poll] and [on_retry] do
-    nothing; [on_poll_error] and [on_warning] write one line to stderr. Override
-    the fields a caller cares about —
-    [{ default_hooks with on_assigned = fun () -> ready := true }]. *)
+    point: [on_ready], [on_assignment], [on_assigned], [on_revoked], [on_poll]
+    and [on_retry] do nothing; [on_poll_error] and [on_warning] write one line
+    to stderr. Override the fields a caller cares about —
+    [{ default_hooks with on_assignment = fun n -> owned := n }]. *)
 
 (** [create ?hooks cfg ~sw] creates a consumer, subscribes
     to configured topics, and starts a poll fiber in [sw]. [hooks.on_ready]
@@ -88,13 +89,18 @@ val default_hooks : hooks
     that one to stderr.
 
     Lifecycle observations for callers that model readiness and liveness
-    themselves (this library deliberately carries no policy): [on_assigned]
-    fires whenever the assignment becomes non-empty (the first assignment, and
-    again after a rebalance that returns it); [on_revoked] fires whenever a
-    non-empty assignment is lost, including the non-empty to different-non-empty
-    rebalance transition (which fires [on_revoked] then [on_assigned] in that
-    order); [on_poll] fires after every successful poll, whether or not it
-    produced a message, and is the poll cadence a liveness signal should be
+    themselves (this library deliberately carries no policy): [on_assignment n]
+    fires whenever the number of partitions this member owns changes, and once
+    when it joins the group — with [n = 0] for a member that owns nothing. It is
+    the observation to build readiness on: an idle standby in a consumer group
+    has joined, is healthy, and is *expected* to own no partition, so "owns no
+    partition" must not read as "not ready". [on_assigned] and [on_revoked]
+    remain the coarser non-empty-transition signals ([on_assigned] on the first
+    assignment and again after a rebalance that returns one; [on_revoked]
+    whenever a non-empty assignment is lost, including the non-empty to
+    different-non-empty transition, which fires [on_revoked] then [on_assigned]
+    in that order); [on_poll] fires after every successful poll, whether or not
+    it produced a message, and is the poll cadence a liveness signal should be
     derived from; [on_ready] is the compatibility one-shot (fires once on the
     first assignment). *)
 val create

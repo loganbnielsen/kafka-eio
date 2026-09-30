@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **API change**: `Kafka.Consumer.hooks` gains `on_assignment : int -> unit`,
+  fired whenever the number of partitions this member owns changes and once when
+  it joins the group, and `Kafka_raw.memberid` exposes the group member id.
+  Membership and ownership are now separable: a group member that owns no
+  partition — a standby replica on a one-partition topic — is observable as a
+  joined member owning `0`, where before it produced no lifecycle observation at
+  all and was indistinguishable from a consumer that had never joined. Readiness
+  modelled on this hook no longer treats an idle standby as unhealthy.
+
 - **API change**: `Kafka.Producer.produce` and the promise-returning
   `Kafka.Producer.produce_await` are replaced by two functions that name their
   synchronization semantics. `produce_receipt` enqueues a message and returns the

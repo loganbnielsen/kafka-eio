@@ -126,6 +126,15 @@ val assignment_count  : kafka_handle -> int
     Fast local query — does not block or call the broker. *)
 val assignment : kafka_handle -> (string * int32) list
 
+(** The consumer's group member id, or [None] when it is not currently a
+    member of a consumer group. Fast local query — does not block or call the
+    broker.
+
+    This is the only signal that separates "joined the group and owns nothing"
+    from "has not joined yet": a member whose assignment is empty is still a
+    member, while {!assignment} reads the empty list in both cases. *)
+val memberid : kafka_handle -> string option
+
 (** [create_topic handle ~topic_name ~partitions ~replication_factor ~config]
     creates a topic via librdkafka's admin API on an existing handle.
     Releases the OCaml domain lock while awaiting the broker response.

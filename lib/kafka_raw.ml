@@ -79,6 +79,9 @@ external assignment_count : kafka_handle -> int
 external assignment : kafka_handle -> (string * int32) list
   = "ocaml_rd_kafka_assignment"
 
+external memberid : kafka_handle -> string option
+  = "ocaml_rd_kafka_memberid"
+
 external create_topic_raw
   : kafka_handle -> string -> int -> int -> (string * string) list -> int
   = "ocaml_rd_kafka_create_topic"
